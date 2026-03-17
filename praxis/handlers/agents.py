@@ -64,6 +64,9 @@ def spawn_handler(target: list[str], params: dict, ctx) -> Any:
     if isinstance(verbs, str):
         verbs = [v.strip() for v in verbs.split(",")]
 
+    # Normalize to uppercase
+    verbs = [v.upper() for v in verbs]
+
     # Ensure ctx has an agent_registry
     if not hasattr(ctx, "agent_registry") or ctx.agent_registry is None:
         ctx.agent_registry = AgentRegistry()
@@ -81,6 +84,7 @@ def spawn_handler(target: list[str], params: dict, ctx) -> Any:
         agent_id=agent_id,
         role=role,
         verbs=verbs,
+        cap_allow=set(verbs) if verbs else None,
         executor=worker_exe,
         metadata={"spawned_by": "coordinator"},
     )
@@ -251,8 +255,8 @@ def cap_handler(target: list[str], params: dict, ctx) -> Any:
     """
     CAP — Declare capability scope for the current agent.
 
-    Metadata annotation: records what this agent is allowed to do.
-    Used by the validator in production mode to enforce role-based limits.
+    Records the allow-list and enforces it at runtime: any subsequent verb
+    not in the allow set raises CapabilityViolation.
 
     Usage:
         CAP.agent_name(role=data, allow=[ING,CLN,XFRM])
@@ -264,7 +268,13 @@ def cap_handler(target: list[str], params: dict, ctx) -> Any:
     if isinstance(allow, str):
         allow = [v.strip() for v in allow.split(",")]
 
+    # Normalize to uppercase — grammar parses list values as lowercase identifiers
+    allow = [v.upper() for v in allow]
+
     cap_entry = {"agent": agent, "role": role, "capabilities": allow}
     ctx.variables.setdefault("_capabilities", {})[agent] = cap_entry
+
+    # Activate runtime enforcement on the live context
+    ctx._cap_allow = set(allow)
 
     return cap_entry

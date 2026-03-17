@@ -43,12 +43,13 @@ class Worker:
     Each worker has its own isolated Executor and ExecutionContext — workers
     never share mutable state with the coordinator or each other.
     """
-    agent_id:  str
-    role:      str
-    verbs:     list[str]
-    executor:  Any           # praxis.executor.Executor
-    metadata:  dict = field(default_factory=dict)
-    _lock:     threading.Lock = field(default_factory=threading.Lock, repr=False)
+    agent_id:   str
+    role:       str
+    verbs:      list[str]
+    executor:   Any           # praxis.executor.Executor
+    cap_allow:  set[str] | None = None  # enforced verb allow-list; None = unrestricted
+    metadata:   dict = field(default_factory=dict)
+    _lock:      threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def execute(self, program_text: str, memory: Any = None) -> dict:
         """
@@ -60,7 +61,8 @@ class Worker:
         start = time.monotonic()
         try:
             program  = parse(program_text)
-            results  = self.executor.execute(program, memory=memory)
+            results  = self.executor.execute(program, memory=memory,
+                                             cap_allow=self.cap_allow)
             duration = int((time.monotonic() - start) * 1000)
             output   = results[-1]["output"] if results else None
             return {

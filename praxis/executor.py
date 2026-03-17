@@ -84,6 +84,8 @@ class ExecutionContext:
         self.max_step_ms = max_step_ms
         self.max_output_bytes = max_output_bytes
         self._start_time: float = time.monotonic()
+        # CAP enforcement — None means unrestricted
+        self._cap_allow: set[str] | None = None
 
     def set_var(self, name: str, value: Any) -> None:
         self.variables[name] = value
@@ -106,8 +108,19 @@ class ResourceLimitExceeded(ShaunRuntimeError):
     """Raised when a resource limit (time or output size) is exceeded."""
 
 
+class CapabilityViolation(ShaunRuntimeError):
+    """Raised when a verb is executed outside the declared CAP allow-list."""
+
+
 class UnregisteredVerbError(ShaunRuntimeError):
     pass
+
+
+# Verbs that are always allowed even when a CAP allow-list is active.
+# These are native executor constructs, not handler-dispatched operations.
+_CAP_NATIVE_VERBS: frozenset[str] = frozenset({
+    "SET", "CALL", "RETRY", "ROLLBACK", "CAP",
+})
 
 
 class RetryExhausted(ShaunRuntimeError):
@@ -152,6 +165,7 @@ class Executor:
         timeout_seconds: float | None = None,
         max_step_ms: int | None = None,
         max_output_bytes: int | None = None,
+        cap_allow: set[str] | None = None,
     ) -> list[ExecutionResult]:
         ctx = ExecutionContext(
             mode=self.mode,
@@ -161,6 +175,8 @@ class Executor:
             max_step_ms=max_step_ms,
             max_output_bytes=max_output_bytes,
         )
+        if cap_allow is not None:
+            ctx._cap_allow = set(cap_allow)
 
         # Register all PLAN declarations so CALL can find them
         for stmt in program.statements:
@@ -253,6 +269,14 @@ class Executor:
         if verb == "ROLLBACK":
             return self._exec_rollback(action, ctx)
 
+        # CAP enforcement — check verb against declared allow-list
+        if ctx._cap_allow is not None and verb not in _CAP_NATIVE_VERBS:
+            if verb not in ctx._cap_allow:
+                raise CapabilityViolation(
+                    f"Verb '{verb}' is not in the declared capability set "
+                    f"{sorted(ctx._cap_allow)}. Add it to CAP.allow or remove the step."
+                )
+
         # Resolve $var references in params before dispatch
         resolved = self._resolve_params(action.params, ctx)
 
@@ -304,7 +328,7 @@ class Executor:
             target_str = ".".join(action.target)
             log = f"{verb}.{target_str} -> ok ({duration_ms}ms)"
             r = _make_result(verb, action.target, resolved, output, "ok", duration_ms, log)
-        except (AssertionFailure, GateRejected, ResourceLimitExceeded):
+        except (AssertionFailure, GateRejected, ResourceLimitExceeded, CapabilityViolation):
             raise  # these halt the chain — do not swallow
         except Exception as exc:
             duration_ms = int((time.monotonic() - start) * 1000)
