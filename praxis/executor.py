@@ -30,6 +30,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Literal, TypedDict
 
+from praxis.handlers.audit import AssertionFailure, GateRejected
+
 from praxis.ast_types import (
     Program, Chain, VerbAction, ParBlock, IfStmt, LoopStmt,
     Block, GoalDecl, PlanDecl, Skip, Break, Wait,
@@ -55,11 +57,13 @@ class ExecutionResult(TypedDict):
 # ──────────────────────────────────────────────────────────────────────────────
 
 class ExecutionContext:
-    def __init__(self) -> None:
+    def __init__(self, mode: str = "dev", memory: Any = None) -> None:
         self.variables: dict[str, Any] = {}
         self.last_output: Any = None
         self.log: list[ExecutionResult] = []
         self.plan_registry: dict[str, PlanDecl] = {}
+        self.mode = mode
+        self.memory = memory  # optional ProgramMemory for SEARCH verb
 
     def set_var(self, name: str, value: Any) -> None:
         self.variables[name] = value
@@ -109,8 +113,8 @@ class Executor:
         self.handlers = handlers
         self.mode = mode
 
-    def execute(self, program: Program) -> list[ExecutionResult]:
-        ctx = ExecutionContext()
+    def execute(self, program: Program, memory: Any = None) -> list[ExecutionResult]:
+        ctx = ExecutionContext(mode=self.mode, memory=memory)
 
         # Register all PLAN declarations so CALL can find them
         for stmt in program.statements:
@@ -145,7 +149,11 @@ class Executor:
             ctx.log.append(r)
             return [r]
         if isinstance(node, Wait):
-            r = _make_result("WAIT", [], {}, None, "ok", 0, "WAIT → stub (Sprint 1)")
+            import time as _time
+            secs = float(node.params.get("seconds", 0)) if hasattr(node, "params") else 0
+            if secs > 0:
+                _time.sleep(secs)
+            r = _make_result("WAIT", [], {}, {"slept_seconds": secs}, "ok", int(secs * 1000), f"WAIT → {secs}s")
             ctx.log.append(r)
             return [r]
         if isinstance(node, Break):
@@ -206,12 +214,14 @@ class Executor:
             output = handler(action.target, resolved, ctx)
             duration_ms = int((time.monotonic() - start) * 1000)
             target_str = ".".join(action.target)
-            log = f"{verb}.{target_str} → ok ({duration_ms}ms)"
+            log = f"{verb}.{target_str} -> ok ({duration_ms}ms)"
             r = _make_result(verb, action.target, resolved, output, "ok", duration_ms, log)
+        except (AssertionFailure, GateRejected):
+            raise  # these halt the chain — do not swallow
         except Exception as exc:
             duration_ms = int((time.monotonic() - start) * 1000)
             target_str = ".".join(action.target)
-            log = f"{verb}.{target_str} → error: {exc}"
+            log = f"{verb}.{target_str} -> error: {exc}"
             r = _make_result(verb, action.target, resolved, None, "error", duration_ms, log)
 
         ctx.last_output = r["output"]
