@@ -365,6 +365,54 @@ See `examples/swarm_analysis.px` for the full reference program.
 
 ---
 
+## Self-Improvement Loop
+
+v0.5 introduces `praxis improve` — the runtime watches itself run and proposes rules that prevent recurrence of observed failures.
+
+```
+$ praxis improve
+
+Analyzing execution history...
+Found 2 failure pattern(s):
+
+  TRN  5 failures  input not clean
+  OUT  3 failures  delivery channel timeout
+
+Proposing 2 rule(s):
+
+Rule 1/2  source: heuristic
+  Pattern: TRN failed 5×
+  Verbs:   CLN, TRN
+  Impact:  ~8 programs affected, ~3 failures prevented
+
+  Proposed rule:
+  ALWAYS run CLN before TRN to ensure inputs are normalized.
+
+  Accept this rule? [Y/n]: Y
+  ✓ Rule added to constitution.
+
+Done. 2 rule(s) added, 0 skipped.
+Constitution updated: praxis-constitution.md
+```
+
+With `ANTHROPIC_API_KEY` set, use `--llm` for Claude-written rule text:
+
+```
+praxis improve --llm
+```
+
+Other options:
+
+```
+praxis improve --dry-run          # preview without writing
+praxis improve --yes              # accept all without prompting
+praxis improve --log path/to.log  # custom log file
+```
+
+The improvement loop closes the feedback cycle: programs run → failures are logged → `praxis improve` proposes rules → rules guide the planner → fewer failures.
+
+---
+
 ## Development Roadmap
 
 | Version | Status | Focus |
@@ -373,8 +421,8 @@ See `examples/swarm_analysis.px` for the full reference program.
 | **v0.2** | ✅ Released | I/O & audit verbs: `FETCH`, `POST`, `WRITE`, `STORE`, `RECALL`, `ASSERT`, `GATE`, `SNAP`, `LOG`, `ROUTE`, `VALIDATE`; deploy verbs: `BUILD`, `DEP`, `TEST` |
 | **v0.3** | ✅ Released | Error recovery: `ERR`, `RETRY` (backoff), `ROLLBACK`; `Scheduler` with triage hook for zero-cost monitoring loops |
 | **v0.4** | ✅ Released | Multi-agent coordination: `SPAWN`, `MSG`, `CAST`, `JOIN`, `SIGN`, `CAP`; `AgentRegistry`; HMAC-SHA256 message signing; MSG cycle detection |
-| **v0.5** | Planned | Provider abstraction: Ollama, OpenAI, local models alongside Anthropic |
-| **v0.6** | Planned | Self-improvement loop: `praxis improve` analyzes execution log, proposes constitutional rules, runs eval |
+| **v0.5** | ✅ Released | Self-improvement loop: `praxis improve` analyzes execution log, proposes constitutional rules, accepts to constitution |
+| **v0.6** | Planned | Provider abstraction: Ollama, OpenAI, local models alongside Anthropic |
 | **v0.7** | Planned | `.px` file format, VS Code extension with syntax highlighting |
 
 ---

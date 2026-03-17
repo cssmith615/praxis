@@ -36,6 +36,7 @@ from praxis.handlers import HANDLERS
 from praxis.memory import ProgramMemory
 from praxis.constitution import Constitution
 from praxis.planner import Planner, PlanningFailure
+from praxis.improver import Improver
 
 console = Console()
 
@@ -275,6 +276,106 @@ def memory_cmd(db: str | None, n: int):
             p.created_at[:19],
         )
     console.print(table)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# praxis improve
+# ──────────────────────────────────────────────────────────────────────────────
+
+@main.command("improve")
+@click.option("--log", default=None, help="Path to execution log (default: ~/.praxis/execution.log)")
+@click.option("--constitution", "const_path", default=None, help="Path to constitution file")
+@click.option("--llm", is_flag=True, help="Use Claude API to write rule text (requires ANTHROPIC_API_KEY)")
+@click.option("--yes", "-y", is_flag=True, help="Accept all proposals without prompting")
+@click.option("--dry-run", is_flag=True, help="Show proposals but don't write anything")
+def improve_cmd(
+    log: str | None,
+    const_path: str | None,
+    llm: bool,
+    yes: bool,
+    dry_run: bool,
+):
+    """
+    Analyze execution history and propose constitutional rules.
+
+    Reads ~/.praxis/execution.log, finds recurring failure patterns,
+    generates rule candidates, and appends accepted rules to
+    praxis-constitution.md.
+    """
+    from pathlib import Path
+
+    constitution = Constitution(const_path) if const_path else Constitution()
+    improver = Improver(constitution=constitution, log_path=log, use_llm=llm)
+
+    console.print("\n[bold cyan]Analyzing execution history...[/]")
+
+    patterns = improver.analyze()
+    if not patterns:
+        console.print("[dim]No significant failure patterns found. "
+                      "Run more programs to build up history.[/]")
+        return
+
+    console.print(f"[green]Found {len(patterns)} failure pattern(s):[/]\n")
+    for p in patterns:
+        console.print(
+            f"  [bold]{p.verb}[/]  {p.count} failures  "
+            f"[dim]{p.error_summary[:60]}[/]"
+        )
+
+    console.print()
+    proposals = improver.propose(patterns)
+    if not proposals:
+        console.print("[dim]No new rules to propose (all patterns already covered).[/]")
+        return
+
+    console.print(f"[bold cyan]Proposing {len(proposals)} rule(s):[/]\n")
+
+    accepted_count = 0
+    skipped_count  = 0
+
+    for i, proposal in enumerate(proposals, 1):
+        # Display proposal
+        console.print(f"[bold]Rule {i}/{len(proposals)}[/]  "
+                      f"[dim]source: {proposal.source}[/]")
+        console.print(f"  Pattern: [yellow]{proposal.pattern.verb}[/] "
+                      f"failed {proposal.pattern.count}×")
+        console.print(f"  Verbs:   {', '.join(proposal.verbs)}")
+        console.print(f"  Impact:  ~{proposal.affected_programs} programs affected, "
+                      f"~{proposal.estimated_prevented} failures prevented")
+        console.print()
+        console.print(f"  [bold green]Proposed rule:[/]")
+        console.print(f"  [italic]{proposal.rule_text}[/]")
+        console.print()
+
+        if dry_run:
+            console.print("  [dim](dry-run — not written)[/]\n")
+            continue
+
+        if yes:
+            accept = True
+        else:
+            accept = click.confirm("  Accept this rule?", default=True)
+
+        if accept:
+            added = improver.accept(proposal)
+            if added:
+                console.print("  [green]✓ Rule added to constitution.[/]\n")
+                accepted_count += 1
+            else:
+                console.print("  [dim]✗ Duplicate — already in constitution.[/]\n")
+                skipped_count += 1
+        else:
+            console.print("  [dim]Skipped.[/]\n")
+            skipped_count += 1
+
+    if not dry_run:
+        console.print(
+            f"[bold]Done.[/] {accepted_count} rule(s) added, {skipped_count} skipped."
+        )
+        if accepted_count:
+            console.print(
+                f"[dim]Constitution updated: {constitution.path}[/]"
+            )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
