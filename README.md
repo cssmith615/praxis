@@ -332,9 +332,9 @@ ING.build -> GATE -> DEP.api
 
 ---
 
-## Multi-Agent Coordination (ClawSwarm)
+## Multi-Agent Coordination
 
-v0.4 ships the ClawSwarm pattern — structured multi-agent coordination without natural language passing between agents. Coordinators dispatch typed Praxis programs to specialist workers. Workers run in parallel. Results are collected with `JOIN`.
+v0.4 ships structured multi-agent coordination without natural language passing between agents. Coordinators dispatch typed Praxis programs to specialist workers. Workers run in parallel. Results are collected with `JOIN`.
 
 ```
 // Declare coordinator capabilities
@@ -372,7 +372,7 @@ See `examples/swarm_analysis.px` for the full reference program.
 | **v0.1** | ✅ Released | Language, runtime, planner, memory, constitution, REST bridge |
 | **v0.2** | ✅ Released | I/O & audit verbs: `FETCH`, `POST`, `WRITE`, `STORE`, `RECALL`, `ASSERT`, `GATE`, `SNAP`, `LOG`, `ROUTE`, `VALIDATE`; deploy verbs: `BUILD`, `DEP`, `TEST` |
 | **v0.3** | ✅ Released | Error recovery: `ERR`, `RETRY` (backoff), `ROLLBACK`; `Scheduler` with triage hook for zero-cost monitoring loops |
-| **v0.4** | ✅ Released | Multi-agent ClawSwarm: `SPAWN`, `MSG`, `CAST`, `JOIN`, `SIGN`, `CAP`; `AgentRegistry`; HMAC-SHA256 message signing; MSG cycle detection |
+| **v0.4** | ✅ Released | Multi-agent coordination: `SPAWN`, `MSG`, `CAST`, `JOIN`, `SIGN`, `CAP`; `AgentRegistry`; HMAC-SHA256 message signing; MSG cycle detection |
 | **v0.5** | Planned | Provider abstraction: Ollama, OpenAI, local models alongside Anthropic |
 | **v0.6** | Planned | Self-improvement loop: `praxis improve` analyzes execution log, proposes constitutional rules, runs eval |
 | **v0.7** | Planned | `.px` file format, VS Code extension with syntax highlighting |

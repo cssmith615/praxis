@@ -1,4 +1,4 @@
-// ClawSwarm — 2-agent coordinator/worker pattern
+// Multi-agent coordinator/worker pattern
 //
 // Coordinator dispatches typed Praxis programs to specialist workers.
 // No natural language passes between agents — only structured programs.
