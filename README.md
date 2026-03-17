@@ -334,13 +334,13 @@ ING.build -> GATE -> DEP.api
 
 ## Development Roadmap
 
-| Version | Focus |
-|---------|-------|
-| **v0.1** (current) | Language, runtime, planner, memory, constitution, bridge |
-| **v0.2** | I/O verb implementations: `FETCH`, `POST`, `WRITE`, `STORE`, `RECALL` |
-| **v0.3** | Provider abstraction: Ollama, OpenAI, local models alongside Anthropic |
-| **v0.4** | Multi-agent coordination: `SPAWN`, `MSG`, `SYNC` verb implementations |
-| **v0.5** | `.px` file format, VS Code extension with syntax highlighting |
+| Version | Status | Focus |
+|---------|--------|-------|
+| **v0.1** | ✅ Released | Language, runtime, planner, memory, constitution, REST bridge |
+| **v0.2** | ✅ Released | I/O & audit verbs: `FETCH`, `POST`, `WRITE`, `STORE`, `RECALL`, `ASSERT`, `GATE`, `SNAP`, `LOG`, `ROUTE`, `VALIDATE`; deploy verbs: `BUILD`, `DEP`, `TEST` |
+| **v0.3** | Planned | Provider abstraction: Ollama, OpenAI, local models alongside Anthropic |
+| **v0.4** | Planned | Multi-agent coordination: `SPAWN`, `MSG`, `SYNC` verb implementations |
+| **v0.5** | Planned | `.px` file format, VS Code extension with syntax highlighting |
 
 ---
 
@@ -348,7 +348,7 @@ ING.build -> GATE -> DEP.api
 
 Praxis is in early development. The most useful contributions right now are:
 
-- **Handler implementations** — the 51 verb stubs in `praxis/handlers/` need real implementations (see `v0.2` roadmap)
+- **Handler implementations** — remaining verb stubs in `praxis/handlers/` (see `v0.3+` roadmap for what's next)
 - **Constitutional rules** — add rules to `praxis-constitution.md` that encode best practices for your domain
 - **Real-world programs** — share `.px` files that solve real problems
 - **Embedder integrations** — examples using Ollama, OpenAI embeddings, etc.
