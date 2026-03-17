@@ -29,7 +29,7 @@ from __future__ import annotations
 import json as _json
 import sqlite3 as _sqlite3
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FutureTimeout, as_completed
 from pathlib import Path as _Path
 from typing import Any, Literal, TypedDict
 
@@ -60,7 +60,15 @@ class ExecutionResult(TypedDict):
 # ──────────────────────────────────────────────────────────────────────────────
 
 class ExecutionContext:
-    def __init__(self, mode: str = "dev", memory: Any = None, handlers: Any = None) -> None:
+    def __init__(
+        self,
+        mode: str = "dev",
+        memory: Any = None,
+        handlers: Any = None,
+        timeout_seconds: float | None = None,
+        max_step_ms: int | None = None,
+        max_output_bytes: int | None = None,
+    ) -> None:
         self.variables: dict[str, Any] = {}
         self.last_output: Any = None
         self.log: list[ExecutionResult] = []
@@ -71,6 +79,11 @@ class ExecutionContext:
         self.agent_registry: Any = None    # AgentRegistry, populated by SPAWN
         self.pending_futures: dict = {}    # msg_id → (agent_id, Future, timeout)
         self._handlers = handlers          # passed to spawned workers
+        # Resource limits
+        self.timeout_seconds = timeout_seconds
+        self.max_step_ms = max_step_ms
+        self.max_output_bytes = max_output_bytes
+        self._start_time: float = time.monotonic()
 
     def set_var(self, name: str, value: Any) -> None:
         self.variables[name] = value
@@ -87,6 +100,10 @@ class ExecutionContext:
 
 class ShaunRuntimeError(Exception):
     pass
+
+
+class ResourceLimitExceeded(ShaunRuntimeError):
+    """Raised when a resource limit (time or output size) is exceeded."""
 
 
 class UnregisteredVerbError(ShaunRuntimeError):
@@ -128,8 +145,22 @@ class Executor:
         self.handlers = handlers
         self.mode = mode
 
-    def execute(self, program: Program, memory: Any = None) -> list[ExecutionResult]:
-        ctx = ExecutionContext(mode=self.mode, memory=memory, handlers=self.handlers)
+    def execute(
+        self,
+        program: Program,
+        memory: Any = None,
+        timeout_seconds: float | None = None,
+        max_step_ms: int | None = None,
+        max_output_bytes: int | None = None,
+    ) -> list[ExecutionResult]:
+        ctx = ExecutionContext(
+            mode=self.mode,
+            memory=memory,
+            handlers=self.handlers,
+            timeout_seconds=timeout_seconds,
+            max_step_ms=max_step_ms,
+            max_output_bytes=max_output_bytes,
+        )
 
         # Register all PLAN declarations so CALL can find them
         for stmt in program.statements:
@@ -231,15 +262,49 @@ class Executor:
                 "Add it to handlers/__init__.py."
             )
 
+        # Wall-clock budget check before dispatching next step
+        if ctx.timeout_seconds is not None:
+            elapsed = time.monotonic() - ctx._start_time
+            if elapsed >= ctx.timeout_seconds:
+                raise ResourceLimitExceeded(
+                    f"Program timeout: exceeded {ctx.timeout_seconds}s wall-clock limit"
+                )
+
         handler = self.handlers[verb]
         start = time.monotonic()
         try:
-            output = handler(action.target, resolved, ctx)
+            if ctx.max_step_ms is not None:
+                step_timeout = ctx.max_step_ms / 1000.0
+                _pool = ThreadPoolExecutor(max_workers=1)
+                _fut = _pool.submit(handler, action.target, resolved, ctx)
+                _pool.shutdown(wait=False)  # don't block on thread cleanup
+                try:
+                    output = _fut.result(timeout=step_timeout)
+                except _FutureTimeout:
+                    duration_ms = int((time.monotonic() - start) * 1000)
+                    raise ResourceLimitExceeded(
+                        f"{verb} exceeded per-step limit of {ctx.max_step_ms}ms"
+                    )
+            else:
+                output = handler(action.target, resolved, ctx)
+
             duration_ms = int((time.monotonic() - start) * 1000)
+
+            # Output size enforcement
+            if ctx.max_output_bytes is not None and output is not None:
+                try:
+                    out_bytes = len(_json.dumps(output).encode())
+                except (TypeError, ValueError):
+                    out_bytes = len(str(output).encode())
+                if out_bytes > ctx.max_output_bytes:
+                    raise ResourceLimitExceeded(
+                        f"{verb} output size {out_bytes} bytes exceeds limit of {ctx.max_output_bytes} bytes"
+                    )
+
             target_str = ".".join(action.target)
             log = f"{verb}.{target_str} -> ok ({duration_ms}ms)"
             r = _make_result(verb, action.target, resolved, output, "ok", duration_ms, log)
-        except (AssertionFailure, GateRejected):
+        except (AssertionFailure, GateRejected, ResourceLimitExceeded):
             raise  # these halt the chain — do not swallow
         except Exception as exc:
             duration_ms = int((time.monotonic() - start) * 1000)

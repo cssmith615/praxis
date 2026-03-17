@@ -32,3 +32,9 @@ Human confirmation required before any rule is committed.
 ## Auto-Proposed Rules (Sprint 7+)
 
 <!-- Rules proposed by `shaun improve` will be appended here after human approval. -->
+
+[verb:CLN,TRN] ALWAYS CLN before TRN.
+
+[verb:ING,VALIDATE] ALWAYS VALIDATE after ING.
+
+[verb:CLN,TRN] ALWAYS run CLN before TRN to ensure inputs are normalized. Raw data passed directly to TRN causes errors.
