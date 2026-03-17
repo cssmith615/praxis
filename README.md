@@ -338,9 +338,10 @@ ING.build -> GATE -> DEP.api
 |---------|--------|-------|
 | **v0.1** | ✅ Released | Language, runtime, planner, memory, constitution, REST bridge |
 | **v0.2** | ✅ Released | I/O & audit verbs: `FETCH`, `POST`, `WRITE`, `STORE`, `RECALL`, `ASSERT`, `GATE`, `SNAP`, `LOG`, `ROUTE`, `VALIDATE`; deploy verbs: `BUILD`, `DEP`, `TEST` |
-| **v0.3** | Planned | Provider abstraction: Ollama, OpenAI, local models alongside Anthropic |
-| **v0.4** | Planned | Multi-agent coordination: `SPAWN`, `MSG`, `SYNC` verb implementations |
-| **v0.5** | Planned | `.px` file format, VS Code extension with syntax highlighting |
+| **v0.3** | ✅ Released | Error recovery: `ERR`, `RETRY` (backoff), `ROLLBACK`; `Scheduler` with triage hook for zero-cost monitoring loops |
+| **v0.4** | Planned | Provider abstraction: Ollama, OpenAI, local models alongside Anthropic |
+| **v0.5** | Planned | Multi-agent coordination: `SPAWN`, `MSG`, `SYNC` verb implementations |
+| **v0.6** | Planned | `.px` file format, VS Code extension with syntax highlighting |
 
 ---
 
