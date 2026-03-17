@@ -501,7 +501,7 @@ The improvement loop closes the feedback cycle: programs run → failures are lo
 | **v0.6** | ✅ Released | Provider abstraction: Anthropic, OpenAI, Ollama, Grok, Gemini — swap backends with one flag |
 | **v0.7** | ✅ Released | `praxis serve` — local web dashboard: programs, logs, constitution, live editor |
 | **v0.8** | ✅ Released | Resource limits: per-step timeout, wall-clock budget, output size cap enforced in executor |
-| **v0.9** | Planned | CAP enforcement at runtime, optimizer passes, program rewriting |
+| **v0.9** | ✅ Released | CAP enforcement at runtime; optimizer (parallelization, dead step elimination, constant folding); performance rewriter; TypeScript + WASM code generators; process isolation sandbox; outcome-driven program evolution |
 
 ---
 

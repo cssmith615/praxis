@@ -454,7 +454,7 @@ def serve_cmd(host: str, port: int, open_browser: bool):
 @click.option("--file", "-f", "filepath", type=click.Path(exists=True),
               help="Path to a .px file")
 @click.option("--target", "-t", default="typescript",
-              type=click.Choice(["typescript"]), show_default=True,
+              type=click.Choice(["typescript", "wasm"]), show_default=True,
               help="Compile target language")
 @click.option("--out", "-o", "outfile", type=click.Path(),
               help="Output file path (default: stdout)")
@@ -471,8 +471,6 @@ def compile_cmd(
     runtime_import: str,
 ):
     """Compile a Praxis program to a target language."""
-    from praxis.codegen.typescript import TypeScriptGenerator, RUNTIME_STUB
-
     source = _load_source(program, filepath)
     try:
         prog = parse(source)
@@ -480,24 +478,28 @@ def compile_cmd(
         console.print(f"[bold red]Parse error:[/] {exc}")
         sys.exit(1)
 
-    gen = TypeScriptGenerator(
-        runtime_import=runtime_import,
-        embed_runtime=embed_runtime,
-    )
-    ts_code = gen.generate(prog, source_text=source)
+    if target == "wasm":
+        from praxis.codegen.wasm import WasmGenerator
+        code = WasmGenerator().generate(prog, source_text=source)
+        ext = ".wat"
+    else:
+        from praxis.codegen.typescript import TypeScriptGenerator, RUNTIME_STUB
+        gen = TypeScriptGenerator(runtime_import=runtime_import, embed_runtime=embed_runtime)
+        code = gen.generate(prog, source_text=source)
+        ext = ".ts"
 
     if outfile:
         out_path = Path(outfile)
-        out_path.write_text(ts_code, encoding="utf-8")
-        # If embedding runtime, also write the runtime stub alongside
-        if not embed_runtime:
+        out_path.write_text(code, encoding="utf-8")
+        if target == "typescript" and not embed_runtime:
             runtime_out = out_path.parent / "praxis-runtime.ts"
             if not runtime_out.exists():
+                from praxis.codegen.typescript import RUNTIME_STUB
                 runtime_out.write_text(RUNTIME_STUB, encoding="utf-8")
                 console.print(f"[dim]Runtime stub: {runtime_out}[/]")
         console.print(f"[bold green]Compiled → {out_path}[/]")
     else:
-        click.echo(ts_code)
+        click.echo(code)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
