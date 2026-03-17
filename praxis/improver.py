@@ -30,6 +30,7 @@ from typing import Any
 
 from praxis.constitution import Constitution
 from praxis.validator import VALID_VERBS
+from praxis.providers import Provider
 
 _LOG_PATH = Path.home() / ".praxis" / "execution.log"
 
@@ -86,10 +87,12 @@ class Improver:
         constitution: Constitution | None = None,
         log_path: str | Path | None = None,
         use_llm: bool = False,
+        provider: Provider | None = None,
     ) -> None:
         self.constitution = constitution if constitution is not None else Constitution()
         self.log_path = Path(log_path) if log_path else _LOG_PATH
         self.use_llm = use_llm
+        self._provider = provider   # used when use_llm=True
         self._log_entries: list[dict] = []
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -278,19 +281,21 @@ class Improver:
         )
 
     def _propose_llm(self, pattern: FailurePattern) -> RuleProposal:
-        """Use Claude to write a constitutional rule from a failure pattern."""
-        import anthropic
+        """Use the configured provider to write a constitutional rule."""
+        from praxis.providers import resolve_provider
 
-        client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+        provider = self._provider or resolve_provider()
 
         sample_text = "\n".join(f"  - {p}" for p in pattern.sample_programs[:2])
         existing_rules = "\n".join(
             f"  - {r}" for r in self.constitution.get_rules_for_verbs({pattern.verb})[:5]
         )
 
-        prompt = f"""\
-You are a Praxis constitutional rule author. Praxis is an AI-native workflow language.
-
+        system = (
+            "You are a Praxis constitutional rule author. "
+            "Praxis is an AI-native workflow language with symbolic verbs."
+        )
+        user = f"""\
 A recurring failure has been observed:
   Verb:          {pattern.verb}
   Failures:      {pattern.count} times
@@ -314,12 +319,8 @@ Rules must be:
 
 Return ONLY the rule text, no explanation, no prefix."""
 
-        resp = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=200,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        rule_text = resp.content[0].text.strip().strip('"').strip("'")
+        rule_text = provider.complete(system=system, user=user, max_tokens=200)
+        rule_text = rule_text.strip().strip('"').strip("'")
 
         # Extract verbs mentioned in the rule
         rule_verbs = list(_extract_verbs(rule_text) | {pattern.verb})
@@ -391,4 +392,6 @@ def _similarity(a: str, b: str) -> float:
 
 
 def _has_api_key() -> bool:
-    return bool(os.environ.get("ANTHROPIC_API_KEY"))
+    return any(os.environ.get(k) for k in (
+        "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GROK_API_KEY", "XAI_API_KEY", "GEMINI_API_KEY"
+    ))

@@ -179,13 +179,13 @@ def test_plan_result_contains_similar_programs(mem, c):
     assert isinstance(result.similar, list)
 
 
-def test_planner_raises_on_missing_api_key(mem, c):
-    planner = Planner(memory=mem, constitution=c, client=None)
+def test_planner_raises_on_missing_anthropic_key(mem, c):
+    """AnthropicProvider raises EnvironmentError when key is absent."""
+    from praxis.providers import AnthropicProvider
+    provider = AnthropicProvider(api_key=None)
+    provider._api_key = None   # ensure not set
+    planner = Planner(memory=mem, constitution=c, provider=provider)
     import os
-    original = os.environ.pop("ANTHROPIC_API_KEY", None)
-    try:
+    with patch.dict(os.environ, {}, clear=True):
         with pytest.raises(EnvironmentError, match="ANTHROPIC_API_KEY"):
             planner.plan("test goal")
-    finally:
-        if original:
-            os.environ["ANTHROPIC_API_KEY"] = original

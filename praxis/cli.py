@@ -37,6 +37,7 @@ from praxis.memory import ProgramMemory
 from praxis.constitution import Constitution
 from praxis.planner import Planner, PlanningFailure
 from praxis.improver import Improver
+from praxis.providers import resolve_provider
 
 console = Console()
 
@@ -164,6 +165,11 @@ main.add_command(parse_cmd, name="parse")
 @click.option("--no-execute", is_flag=True, help="Plan only; don't execute")
 @click.option("--no-store", is_flag=True, help="Don't store the result in memory")
 @click.option("--show-program", is_flag=True, default=True, help="Print the generated program")
+@click.option("--provider", "-p", default=None,
+              type=click.Choice(["anthropic", "openai", "ollama", "grok", "gemini"],
+                                case_sensitive=False),
+              help="LLM provider (default: auto-detect from env)")
+@click.option("--model", default=None, help="Model override for the chosen provider")
 def goal(
     goal: str,
     mode: str,
@@ -171,16 +177,28 @@ def goal(
     no_execute: bool,
     no_store: bool,
     show_program: bool,
+    provider: str | None,
+    model: str | None,
 ):
     """
     Translate a natural language GOAL into a Praxis program, execute it,
     and store the result in program memory.
 
-    Requires ANTHROPIC_API_KEY environment variable.
+    Provider is auto-detected from environment variables:
+    ANTHROPIC_API_KEY, OPENAI_API_KEY, GROK_API_KEY, GEMINI_API_KEY.
+    Use --provider to override. Defaults to Ollama if no key is set.
     """
     memory = ProgramMemory(db_path=db)
     constitution = Constitution()
-    planner = Planner(memory=memory, constitution=constitution, mode=mode)
+    try:
+        llm_provider = resolve_provider(provider=provider, model=model)
+    except Exception as exc:
+        console.print(f"[bold red]Provider error:[/] {exc}")
+        sys.exit(1)
+
+    console.print(f"[dim]Provider: {llm_provider}[/]")
+    planner = Planner(memory=memory, constitution=constitution,
+                      provider=llm_provider, mode=mode)
 
     # ── Plan ──────────────────────────────────────────────────────────────────
     console.print(f"\n[bold cyan]Planning:[/] {goal}")
@@ -285,13 +303,20 @@ def memory_cmd(db: str | None, n: int):
 @main.command("improve")
 @click.option("--log", default=None, help="Path to execution log (default: ~/.praxis/execution.log)")
 @click.option("--constitution", "const_path", default=None, help="Path to constitution file")
-@click.option("--llm", is_flag=True, help="Use Claude API to write rule text (requires ANTHROPIC_API_KEY)")
+@click.option("--llm", is_flag=True, help="Use an LLM to write rule text (see --provider)")
+@click.option("--provider", "-p", default=None,
+              type=click.Choice(["anthropic", "openai", "ollama", "grok", "gemini"],
+                                case_sensitive=False),
+              help="LLM provider for --llm mode (default: auto-detect)")
+@click.option("--model", default=None, help="Model override for --llm mode")
 @click.option("--yes", "-y", is_flag=True, help="Accept all proposals without prompting")
 @click.option("--dry-run", is_flag=True, help="Show proposals but don't write anything")
 def improve_cmd(
     log: str | None,
     const_path: str | None,
     llm: bool,
+    provider: str | None,
+    model: str | None,
     yes: bool,
     dry_run: bool,
 ):
@@ -305,7 +330,19 @@ def improve_cmd(
     from pathlib import Path
 
     constitution = Constitution(const_path) if const_path else Constitution()
-    improver = Improver(constitution=constitution, log_path=log, use_llm=llm)
+
+    if llm:
+        try:
+            llm_provider = resolve_provider(provider=provider, model=model)
+            console.print(f"[dim]LLM provider: {llm_provider}[/]")
+        except Exception as exc:
+            console.print(f"[bold red]Provider error:[/] {exc}")
+            sys.exit(1)
+    else:
+        llm_provider = None
+
+    improver = Improver(constitution=constitution, log_path=log,
+                        use_llm=llm, provider=llm_provider)
 
     console.print("\n[bold cyan]Analyzing execution history...[/]")
 

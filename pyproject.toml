@@ -48,7 +48,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# AI planning via Anthropic Claude
+# AI planning — Anthropic Claude (other providers use httpx which is already a core dep)
 ai = [
     "anthropic>=0.40.0",
 ]

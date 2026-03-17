@@ -332,6 +332,58 @@ ING.build -> GATE -> DEP.api
 
 ---
 
+## Provider Abstraction
+
+v0.6 decouples the planner from any single LLM backend. Five providers ship out of the box — swap with one flag or env var:
+
+| Provider | Flag | Key env var | Default model |
+|----------|------|-------------|---------------|
+| **Anthropic** | `--provider anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-4-6` |
+| **OpenAI** | `--provider openai` | `OPENAI_API_KEY` | `gpt-4o` |
+| **Grok** (xAI) | `--provider grok` | `GROK_API_KEY` | `grok-3-mini` |
+| **Gemini** (Google) | `--provider gemini` | `GEMINI_API_KEY` | `gemini-2.0-flash` |
+| **Ollama** (local) | `--provider ollama` | _(none)_ | `llama3.2` |
+
+Auto-detection: Praxis reads your env vars in priority order and picks the first available provider. Set `PRAXIS_PROVIDER` to override.
+
+```bash
+# Use Anthropic (auto-detected from env)
+praxis goal "summarize sales data"
+
+# Use Ollama with a local model
+praxis goal "summarize sales data" --provider ollama --model mistral
+
+# Use Grok
+praxis goal "summarize sales data" --provider grok --model grok-3
+
+# Use Gemini
+praxis goal "summarize sales data" --provider gemini --model gemini-2.0-flash
+
+# OpenAI-compatible endpoint (Groq, LM Studio, Azure, etc.)
+OPENAI_BASE_URL=https://api.groq.com/openai/v1 \
+OPENAI_API_KEY=your-groq-key \
+praxis goal "..." --provider openai --model llama-3.1-70b-versatile
+```
+
+Python API:
+
+```python
+from praxis.providers import resolve_provider
+from praxis.planner import Planner
+
+# Explicit
+provider = resolve_provider("ollama", model="phi4")
+
+# Auto-detect from env
+provider = resolve_provider()
+
+planner = Planner(memory=..., constitution=..., provider=provider)
+```
+
+`praxis improve --llm` also accepts `--provider` and `--model` to control which backend writes the proposed constitutional rules.
+
+---
+
 ## Multi-Agent Coordination
 
 v0.4 ships structured multi-agent coordination without natural language passing between agents. Coordinators dispatch typed Praxis programs to specialist workers. Workers run in parallel. Results are collected with `JOIN`.
@@ -422,7 +474,7 @@ The improvement loop closes the feedback cycle: programs run → failures are lo
 | **v0.3** | ✅ Released | Error recovery: `ERR`, `RETRY` (backoff), `ROLLBACK`; `Scheduler` with triage hook for zero-cost monitoring loops |
 | **v0.4** | ✅ Released | Multi-agent coordination: `SPAWN`, `MSG`, `CAST`, `JOIN`, `SIGN`, `CAP`; `AgentRegistry`; HMAC-SHA256 message signing; MSG cycle detection |
 | **v0.5** | ✅ Released | Self-improvement loop: `praxis improve` analyzes execution log, proposes constitutional rules, accepts to constitution |
-| **v0.6** | Planned | Provider abstraction: Ollama, OpenAI, local models alongside Anthropic |
+| **v0.6** | ✅ Released | Provider abstraction: Anthropic, OpenAI, Ollama, Grok, Gemini — swap backends with one flag |
 | **v0.7** | Planned | `.px` file format, VS Code extension with syntax highlighting |
 
 ---

@@ -30,9 +30,7 @@ from praxis.grammar import parse
 from praxis.validator import validate, VALID_VERBS
 from praxis.memory import ProgramMemory, StoredProgram
 from praxis.constitution import Constitution
-
-if TYPE_CHECKING:
-    import anthropic as _anthropic_module
+from praxis.providers import Provider, resolve_provider
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Prompt constants
@@ -141,32 +139,49 @@ class Planner:
         Program library for retrieval and (post-execution) storage.
     constitution : Constitution
         Constitutional rules for the system prompt.
-    model : str
-        Anthropic model ID. Defaults to claude-sonnet-4-6.
+    provider : Provider | None
+        LLM backend. If None, resolved via resolve_provider() (auto-detects
+        from environment: ANTHROPIC_API_KEY > OPENAI_API_KEY > GROK_API_KEY >
+        GEMINI_API_KEY > Ollama fallback).
+    model : str | None
+        Override model for the resolved provider. Ignored when provider= is
+        passed directly.
     max_attempts : int
         Number of generate→validate retry cycles before raising PlanningFailure.
     mode : str
         "dev" or "prod" — passed to the validator.
-    client : anthropic.Anthropic | None
-        Injected client (for tests / custom setups). If None, created from
-        ANTHROPIC_API_KEY env var.
+    client : object | None
+        Legacy: raw Anthropic client for backward compatibility. Wraps in
+        AnthropicProvider automatically.
     """
 
     def __init__(
         self,
         memory: ProgramMemory,
         constitution: Constitution,
-        model: str = "claude-sonnet-4-6",
+        provider: Provider | None = None,
+        model: str | None = None,
         max_attempts: int = 3,
         mode: str = "dev",
-        client=None,
+        client=None,  # legacy — kept for backward compat
     ) -> None:
         self.memory = memory
         self.constitution = constitution
-        self.model = model
         self.max_attempts = max_attempts
         self.mode = mode
-        self._client = client  # lazy-created if None
+
+        # Resolve provider — legacy `client=` wraps in a thin shim
+        if provider is not None:
+            self._provider = provider
+        elif client is not None:
+            self._provider = _LegacyClientProvider(client, model or "claude-sonnet-4-6")
+        else:
+            self._provider = resolve_provider(model=model)
+
+    @property
+    def model(self) -> str:
+        """Model identifier for display / logging."""
+        return self._provider.model_id
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -226,8 +241,6 @@ class Planner:
         adapt: bool,
         last_error: str | None,
     ) -> str:
-        client = self._get_client()
-
         system = _SYSTEM_TEMPLATE.format(
             grammar=_GRAMMAR_SUMMARY,
             vocab=_VOCAB_SUMMARY,
@@ -248,21 +261,16 @@ class Planner:
                 "Adapt it for this goal rather than generating from scratch."
             )
 
-        message = client.messages.create(
-            model=self.model,
-            max_tokens=1024,
+        return self._provider.complete(
             system=system,
-            messages=[{"role": "user", "content": "\n".join(user_lines)}],
+            user="\n".join(user_lines),
+            max_tokens=1024,
         )
-        return message.content[0].text.strip()
 
     # ── Validation ─────────────────────────────────────────────────────────────
 
     def _validate(self, program_text: str) -> str | None:
-        """
-        Parse and validate program_text.
-        Returns an error string if invalid, None if valid.
-        """
+        """Parse and validate program_text. Returns error string or None."""
         try:
             ast = parse(program_text)
         except Exception as exc:
@@ -274,26 +282,30 @@ class Planner:
 
         return None
 
-    # ── Client ─────────────────────────────────────────────────────────────────
 
-    def _get_client(self):
-        if self._client is not None:
-            return self._client
-        try:
-            import anthropic
-        except ImportError as exc:
-            raise ImportError(
-                "anthropic package required for the planner. "
-                "Run: pip install anthropic"
-            ) from exc
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
-        if not api_key:
-            raise EnvironmentError(
-                "ANTHROPIC_API_KEY environment variable not set. "
-                "The planner requires a valid API key."
-            )
-        self._client = anthropic.Anthropic(api_key=api_key)
-        return self._client
+# ──────────────────────────────────────────────────────────────────────────────
+# Legacy shim — wraps a raw Anthropic client as a Provider
+# ──────────────────────────────────────────────────────────────────────────────
+
+class _LegacyClientProvider(Provider):
+    """Wraps a raw anthropic.Anthropic client for backward compatibility."""
+
+    def __init__(self, client, model: str) -> None:
+        self._client = client
+        self._model  = model
+
+    @property
+    def model_id(self) -> str:
+        return self._model
+
+    def complete(self, system: str, user: str, max_tokens: int = 1024) -> str:
+        msg = self._client.messages.create(
+            model=self._model,
+            max_tokens=max_tokens,
+            system=system,
+            messages=[{"role": "user", "content": user}],
+        )
+        return msg.content[0].text.strip()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
