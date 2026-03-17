@@ -418,6 +418,12 @@ class TestPlannerProviderIntegration:
         (tmp_path / "const.md").write_text("# test\n")
         return Planner(memory=mem, constitution=const, provider=provider)
 
+    @pytest.fixture(autouse=True)
+    def _no_embeddings(self):
+        """Patch out sentence_transformers so CI (no [memory] extra) works."""
+        with patch("praxis.memory.ProgramMemory.should_adapt", return_value=(False, [])):
+            yield
+
     def test_planner_accepts_provider(self, tmp_path):
         p = _EchoProvider()
         planner = self._planner(p, tmp_path)
