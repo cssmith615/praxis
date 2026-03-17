@@ -116,10 +116,16 @@ class ProgramMemory:
             vec = self._embedder_fn(text)
             return _normalize(np.array(vec, dtype=np.float32))
 
-        # Lazy-load sentence-transformers
+        # Lazy-load sentence-transformers (optional dep)
         if self._st_model is None:
-            from sentence_transformers import SentenceTransformer
-            self._st_model = SentenceTransformer("all-MiniLM-L6-v2")
+            try:
+                from sentence_transformers import SentenceTransformer
+                self._st_model = SentenceTransformer("all-MiniLM-L6-v2")
+            except ImportError:
+                # sentence-transformers not installed — return a zero vector.
+                # store() still works; retrieve_similar() / should_adapt() will
+                # return no matches (cosine similarity against a zero vec = 0).
+                return np.zeros(384, dtype=np.float32)
         return self._st_model.encode(text, normalize_embeddings=True)
 
     # ── Write ──────────────────────────────────────────────────────────────────
