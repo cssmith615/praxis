@@ -332,6 +332,30 @@ ING.build -> GATE -> DEP.api
 
 ---
 
+## Web Dashboard
+
+v0.7 ships `praxis serve` — a local dashboard that makes everything visible in one place.
+
+```bash
+praxis serve              # http://localhost:7822
+praxis serve --port 8080
+praxis serve --open       # auto-opens browser
+```
+
+Five tabs:
+
+| Tab | What it shows |
+|-----|---------------|
+| **Dashboard** | Stats overview (programs, success rate, rule count) + recent activity |
+| **Programs** | Full program memory library with search, view, open in editor, delete |
+| **Logs** | Live execution history from `~/.praxis/execution.log`, filterable |
+| **Constitution** | All constitutional rules with inline add form |
+| **Editor** | Write and run Praxis programs in-browser, step-by-step results, Ctrl+Enter to run |
+
+The dashboard is a single self-contained HTML page served by FastAPI — no build step, no npm, no external CDN. It works completely offline.
+
+---
+
 ## Provider Abstraction
 
 v0.6 decouples the planner from any single LLM backend. Five providers ship out of the box — swap with one flag or env var:
@@ -475,7 +499,8 @@ The improvement loop closes the feedback cycle: programs run → failures are lo
 | **v0.4** | ✅ Released | Multi-agent coordination: `SPAWN`, `MSG`, `CAST`, `JOIN`, `SIGN`, `CAP`; `AgentRegistry`; HMAC-SHA256 message signing; MSG cycle detection |
 | **v0.5** | ✅ Released | Self-improvement loop: `praxis improve` analyzes execution log, proposes constitutional rules, accepts to constitution |
 | **v0.6** | ✅ Released | Provider abstraction: Anthropic, OpenAI, Ollama, Grok, Gemini — swap backends with one flag |
-| **v0.7** | Planned | `.px` file format, VS Code extension with syntax highlighting |
+| **v0.7** | ✅ Released | `praxis serve` — local web dashboard: programs, logs, constitution, live editor |
+| **v0.8** | Planned | VS Code extension with syntax highlighting, snippets, inline validation |
 
 ---
 

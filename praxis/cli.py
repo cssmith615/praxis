@@ -38,6 +38,7 @@ from praxis.constitution import Constitution
 from praxis.planner import Planner, PlanningFailure
 from praxis.improver import Improver
 from praxis.providers import resolve_provider
+from praxis.server import serve as _serve, DEFAULT_HOST, DEFAULT_PORT
 
 console = Console()
 
@@ -413,6 +414,35 @@ def improve_cmd(
             console.print(
                 f"[dim]Constitution updated: {constitution.path}[/]"
             )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# praxis serve
+# ──────────────────────────────────────────────────────────────────────────────
+
+@main.command("serve")
+@click.option("--host", default=DEFAULT_HOST, show_default=True, help="Bind address")
+@click.option("--port", default=DEFAULT_PORT, show_default=True, type=int, help="Port")
+@click.option("--open", "open_browser", is_flag=True, help="Open browser on start")
+def serve_cmd(host: str, port: int, open_browser: bool):
+    """Start the Praxis web dashboard at http://localhost:7822"""
+    url = f"http://{host}:{port}"
+    console.print(f"\n[bold cyan]Praxis Dashboard[/]  {url}")
+    console.print("[dim]  Tabs: Dashboard · Programs · Logs · Constitution · Editor[/]")
+    console.print("[dim]  Press Ctrl+C to stop.\n[/]")
+
+    if open_browser:
+        import threading, webbrowser, time
+        def _open():
+            time.sleep(0.8)
+            webbrowser.open(url)
+        threading.Thread(target=_open, daemon=True).start()
+
+    try:
+        _serve(host=host, port=port)
+    except ImportError as exc:
+        console.print(f"[bold red]Missing dependency:[/] {exc}")
+        sys.exit(1)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
