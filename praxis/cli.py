@@ -446,6 +446,61 @@ def serve_cmd(host: str, port: int, open_browser: bool):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# praxis compile
+# ──────────────────────────────────────────────────────────────────────────────
+
+@main.command("compile")
+@click.argument("program", required=False)
+@click.option("--file", "-f", "filepath", type=click.Path(exists=True),
+              help="Path to a .px file")
+@click.option("--target", "-t", default="typescript",
+              type=click.Choice(["typescript"]), show_default=True,
+              help="Compile target language")
+@click.option("--out", "-o", "outfile", type=click.Path(),
+              help="Output file path (default: stdout)")
+@click.option("--embed-runtime", is_flag=True,
+              help="Embed runtime stub in the output file")
+@click.option("--runtime-import", default="./praxis-runtime", show_default=True,
+              help="Import path for the Praxis runtime module")
+def compile_cmd(
+    program: str | None,
+    filepath: str | None,
+    target: str,
+    outfile: str | None,
+    embed_runtime: bool,
+    runtime_import: str,
+):
+    """Compile a Praxis program to a target language."""
+    from praxis.codegen.typescript import TypeScriptGenerator, RUNTIME_STUB
+
+    source = _load_source(program, filepath)
+    try:
+        prog = parse(source)
+    except Exception as exc:
+        console.print(f"[bold red]Parse error:[/] {exc}")
+        sys.exit(1)
+
+    gen = TypeScriptGenerator(
+        runtime_import=runtime_import,
+        embed_runtime=embed_runtime,
+    )
+    ts_code = gen.generate(prog, source_text=source)
+
+    if outfile:
+        out_path = Path(outfile)
+        out_path.write_text(ts_code, encoding="utf-8")
+        # If embedding runtime, also write the runtime stub alongside
+        if not embed_runtime:
+            runtime_out = out_path.parent / "praxis-runtime.ts"
+            if not runtime_out.exists():
+                runtime_out.write_text(RUNTIME_STUB, encoding="utf-8")
+                console.print(f"[dim]Runtime stub: {runtime_out}[/]")
+        console.print(f"[bold green]Compiled → {out_path}[/]")
+    else:
+        click.echo(ts_code)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
