@@ -1,0 +1,35 @@
+// ClawSwarm — 2-agent coordinator/worker pattern
+//
+// Coordinator dispatches typed Praxis programs to specialist workers.
+// No natural language passes between agents — only structured programs.
+// Workers run in parallel. JOIN collects all results before synthesis.
+//
+// Agents:
+//   data_worker     — handles ING, CLN, XFRM (data ingestion + cleaning)
+//   analysis_worker — handles SUMM, EVAL, GEN (summarization + evaluation)
+
+GOAL:swarm_sales_analysis
+
+// Declare capabilities for observability
+CAP.coordinator(role=coordinator, allow=[SPAWN,MSG,JOIN,CAST,MERGE,OUT])
+
+// Spawn specialist workers
+SPAWN.data_worker(role=data, verbs=[ING,CLN,XFRM,FILTER]) ->
+SPAWN.analysis_worker(role=analysis, verbs=[SUMM,EVAL,GEN,CLASS]) ->
+
+// Dispatch programs to workers in parallel
+PAR(
+  MSG.data_worker(program="ING.sales(period=week) -> CLN.null -> XFRM.normalize"),
+  MSG.analysis_worker(program="SUMM.text(max=300) -> EVAL.sentiment(threshold=0.5)")
+) ->
+
+// Collect both results
+JOIN(timeout=60) ->
+SET.all_results ->
+
+// Synthesize and deliver
+MERGE ->
+SUMM.text(max=200) ->
+STORE.report(key=weekly_analysis) ->
+LOG.complete(data=$all_results) ->
+OUT.telegram(msg="Weekly analysis complete")

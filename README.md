@@ -332,6 +332,39 @@ ING.build -> GATE -> DEP.api
 
 ---
 
+## Multi-Agent Coordination (ClawSwarm)
+
+v0.4 ships the ClawSwarm pattern — structured multi-agent coordination without natural language passing between agents. Coordinators dispatch typed Praxis programs to specialist workers. Workers run in parallel. Results are collected with `JOIN`.
+
+```
+// Declare coordinator capabilities
+CAP.coordinator(role=coordinator, allow=[SPAWN,MSG,JOIN,CAST])
+
+// Spawn specialist workers
+SPAWN.data_worker(role=data, verbs=[ING,CLN,XFRM]) ->
+SPAWN.analysis_worker(role=analysis, verbs=[SUMM,EVAL,GEN]) ->
+
+// Dispatch in parallel
+PAR(
+  MSG.data_worker(program="ING.sales(period=week) -> CLN.null -> XFRM.normalize"),
+  MSG.analysis_worker(program="SUMM.text(max=300) -> EVAL.sentiment(threshold=0.5)")
+) ->
+
+// Collect and synthesize
+JOIN(timeout=60) -> MERGE -> SUMM.text(max=200) -> OUT.telegram(msg="Analysis ready")
+```
+
+Key properties:
+- **No natural language between agents** — workers receive Praxis programs, not prose
+- **Parallel dispatch** — `PAR(MSG..., MSG...)` submits all at once; `JOIN` collects
+- **HMAC-SHA256 signing** — `SIGN` and `verify_message()` authenticate inter-agent messages
+- **Cycle detection** — validator catches `MSG` self-loops at parse time
+- **Capability declaration** — `CAP` annotates agent scope for observability and enforcement
+
+See `examples/swarm_analysis.px` for the full reference program.
+
+---
+
 ## Development Roadmap
 
 | Version | Status | Focus |
@@ -339,9 +372,10 @@ ING.build -> GATE -> DEP.api
 | **v0.1** | ✅ Released | Language, runtime, planner, memory, constitution, REST bridge |
 | **v0.2** | ✅ Released | I/O & audit verbs: `FETCH`, `POST`, `WRITE`, `STORE`, `RECALL`, `ASSERT`, `GATE`, `SNAP`, `LOG`, `ROUTE`, `VALIDATE`; deploy verbs: `BUILD`, `DEP`, `TEST` |
 | **v0.3** | ✅ Released | Error recovery: `ERR`, `RETRY` (backoff), `ROLLBACK`; `Scheduler` with triage hook for zero-cost monitoring loops |
-| **v0.4** | Planned | Provider abstraction: Ollama, OpenAI, local models alongside Anthropic |
-| **v0.5** | Planned | Multi-agent coordination: `SPAWN`, `MSG`, `SYNC` verb implementations |
-| **v0.6** | Planned | `.px` file format, VS Code extension with syntax highlighting |
+| **v0.4** | ✅ Released | Multi-agent ClawSwarm: `SPAWN`, `MSG`, `CAST`, `JOIN`, `SIGN`, `CAP`; `AgentRegistry`; HMAC-SHA256 message signing; MSG cycle detection |
+| **v0.5** | Planned | Provider abstraction: Ollama, OpenAI, local models alongside Anthropic |
+| **v0.6** | Planned | Self-improvement loop: `praxis improve` analyzes execution log, proposes constitutional rules, runs eval |
+| **v0.7** | Planned | `.px` file format, VS Code extension with syntax highlighting |
 
 ---
 

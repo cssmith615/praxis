@@ -107,6 +107,9 @@ class Validator:
         for stmt in program.statements:
             _validate_node(stmt, ctx)
 
+        # Multi-agent cycle detection: build MSG delegation graph
+        _check_msg_cycles(program, errors)
+
         return errors
 
 
@@ -220,6 +223,70 @@ def _validate_chain(chain: Chain, ctx: _ValidationContext) -> None:
     # Validate each step
     for step in chain.steps:
         _validate_node(step, ctx)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Multi-agent cycle detection
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _collect_msg_edges(node, edges: list[tuple[str, str]], current_plan: str = "main") -> None:
+    """Walk the AST and collect (from_plan, to_agent) edges for all MSG verbs."""
+    if isinstance(node, VerbAction):
+        if node.verb == "MSG" and node.target:
+            edges.append((current_plan, node.target[0]))
+    elif isinstance(node, Chain):
+        for step in node.steps:
+            _collect_msg_edges(step, edges, current_plan)
+    elif isinstance(node, (ParBlock,)):
+        for branch in node.branches:
+            _collect_msg_edges(branch, edges, current_plan)
+    elif isinstance(node, (IfStmt,)):
+        _collect_msg_edges(node.then_body, edges, current_plan)
+        if node.else_body:
+            _collect_msg_edges(node.else_body, edges, current_plan)
+    elif isinstance(node, (LoopStmt,)):
+        _collect_msg_edges(node.body, edges, current_plan)
+    elif isinstance(node, Block):
+        for stmt in node.statements:
+            _collect_msg_edges(stmt, edges, current_plan)
+    elif isinstance(node, PlanDecl):
+        _collect_msg_edges(node.body, edges, current_plan=node.name)
+
+
+def _check_msg_cycles(program: Program, errors: list[str]) -> None:
+    """
+    Detect direct MSG self-loops (agent A sends MSG to itself).
+    Sprint 6 catches direct self-loops; transitive A→B→A detection
+    is deferred to Sprint 6+ when inter-program topology is known.
+    """
+    edges: list[tuple[str, str]] = []
+    for stmt in program.statements:
+        _collect_msg_edges(stmt, edges)
+
+    # Collect SPAWN target names so we can map agent_id → plan context
+    spawned: set[str] = set()
+    for stmt in program.statements:
+        _collect_spawned(stmt, spawned)
+
+    for from_plan, to_agent in edges:
+        if from_plan == to_agent:
+            errors.append(
+                f"MSG cycle detected: PLAN '{from_plan}' sends MSG to itself. "
+                f"Agents cannot delegate back to their own plan."
+            )
+
+
+def _collect_spawned(node, spawned: set) -> None:
+    if isinstance(node, VerbAction) and node.verb == "SPAWN" and node.target:
+        spawned.add(node.target[0])
+    elif isinstance(node, Chain):
+        for step in node.steps:
+            _collect_spawned(step, spawned)
+    elif isinstance(node, Block):
+        for stmt in node.statements:
+            _collect_spawned(stmt, spawned)
+    elif isinstance(node, PlanDecl):
+        _collect_spawned(node.body, spawned)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

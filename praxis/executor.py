@@ -60,14 +60,17 @@ class ExecutionResult(TypedDict):
 # ──────────────────────────────────────────────────────────────────────────────
 
 class ExecutionContext:
-    def __init__(self, mode: str = "dev", memory: Any = None) -> None:
+    def __init__(self, mode: str = "dev", memory: Any = None, handlers: Any = None) -> None:
         self.variables: dict[str, Any] = {}
         self.last_output: Any = None
         self.log: list[ExecutionResult] = []
         self.plan_registry: dict[str, PlanDecl] = {}
         self.mode = mode
-        self.memory = memory          # optional ProgramMemory for SEARCH verb
+        self.memory = memory            # optional ProgramMemory for SEARCH verb
         self.prev_verb_action: Any = None  # last non-RETRY VerbAction; used by RETRY
+        self.agent_registry: Any = None    # AgentRegistry, populated by SPAWN
+        self.pending_futures: dict = {}    # msg_id → (agent_id, Future, timeout)
+        self._handlers = handlers          # passed to spawned workers
 
     def set_var(self, name: str, value: Any) -> None:
         self.variables[name] = value
@@ -126,7 +129,7 @@ class Executor:
         self.mode = mode
 
     def execute(self, program: Program, memory: Any = None) -> list[ExecutionResult]:
-        ctx = ExecutionContext(mode=self.mode, memory=memory)
+        ctx = ExecutionContext(mode=self.mode, memory=memory, handlers=self.handlers)
 
         # Register all PLAN declarations so CALL can find them
         for stmt in program.statements:
