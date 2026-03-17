@@ -2,6 +2,7 @@
 
 > An AI-native intermediate language and runtime for agentic workflows.
 
+[![CI](https://github.com/cssmith615/praxis/actions/workflows/ci.yml/badge.svg)](https://github.com/cssmith615/praxis/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/praxis-lang.svg)](https://pypi.org/project/praxis-lang/)
