@@ -1,12 +1,33 @@
-// Flight price monitor
-// Checks Denver flights, alerts via Telegram if price drops under $200
+// Flight price monitor — Sprint 5 reference program
+//
+// Cost profile (with Ollama triage function on the Scheduler):
+//   No change  -> RECALL + STORE only  ~$0.00 / run
+//   Price drop -> FETCH + EVAL + OUT   ~$0.01 / run
+//
+// Schedule this via:
+//   sched.add(goal="monitor denver flights", program_text=open("flight_monitor.px").read(), interval_seconds=3600)
 
 GOAL:flight_monitor
 
-ING.flights(dest=denver, origin=jfk) ->
-EVAL.price(threshold=200) ->
-SET.price ->
-IF.$price < 200 ->
-  OUT.telegram(msg="Flight drop! Denver from JFK: $" + $price)
-ELSE ->
-  LOG.info(msg="No drop — current price $" + $price)
+PLAN:check_price {
+    FETCH.api(url=https://api.prices.io/v1/flights/denver) ->
+    SET.live_price ->
+    SNAP.before_eval ->
+    EVAL.price(threshold=200) ->
+    IF.$live_price < 200 {
+        STORE.cache(key=denver_price, value=$live_price) ->
+        LOG.alerted(data=$live_price) ->
+        OUT.telegram(msg="Denver flight drop! Book now.")
+    } ELSE {
+        STORE.cache(key=denver_price, value=$live_price) ->
+        LOG.no_alert(data=$live_price)
+    }
+}
+
+PLAN:handle_fetch_error {
+    ERR.api_down(msg="Flight API unreachable", code=503) ->
+    LOG.fetch_failed ->
+    OUT.console(msg="Flight monitor: skipping this cycle, API down")
+}
+
+CALL.check_price

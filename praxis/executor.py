@@ -26,8 +26,11 @@ Handler contract:
 
 from __future__ import annotations
 
+import json as _json
+import sqlite3 as _sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path as _Path
 from typing import Any, Literal, TypedDict
 
 from praxis.handlers.audit import AssertionFailure, GateRejected
@@ -63,7 +66,8 @@ class ExecutionContext:
         self.log: list[ExecutionResult] = []
         self.plan_registry: dict[str, PlanDecl] = {}
         self.mode = mode
-        self.memory = memory  # optional ProgramMemory for SEARCH verb
+        self.memory = memory          # optional ProgramMemory for SEARCH verb
+        self.prev_verb_action: Any = None  # last non-RETRY VerbAction; used by RETRY
 
     def set_var(self, name: str, value: Any) -> None:
         self.variables[name] = value
@@ -84,6 +88,14 @@ class ShaunRuntimeError(Exception):
 
 class UnregisteredVerbError(ShaunRuntimeError):
     pass
+
+
+class RetryExhausted(ShaunRuntimeError):
+    """Raised when RETRY exhausts all attempts without success."""
+    def __init__(self, verb: str, attempts: int):
+        super().__init__(f"RETRY: '{verb}' failed after {attempts} attempt(s)")
+        self.verb = verb
+        self.attempts = attempts
 
 
 class _BreakSignal(Exception):
@@ -199,6 +211,14 @@ class Executor:
                 "CALL", action.target, {}, None, "ok", 0, f"CALL.{plan_name} → empty plan"
             )
 
+        # RETRY — re-execute prev action with backoff (native, no handler needed)
+        if verb == "RETRY":
+            return self._exec_retry(action, ctx)
+
+        # ROLLBACK — restore ctx from a SNAP checkpoint (native, no handler needed)
+        if verb == "ROLLBACK":
+            return self._exec_rollback(action, ctx)
+
         # Resolve $var references in params before dispatch
         resolved = self._resolve_params(action.params, ctx)
 
@@ -225,6 +245,66 @@ class Executor:
             r = _make_result(verb, action.target, resolved, None, "error", duration_ms, log)
 
         ctx.last_output = r["output"]
+        ctx.log.append(r)
+        ctx.prev_verb_action = action  # track for RETRY
+        return r
+
+    # ── RETRY ──────────────────────────────────────────────────────────────────
+
+    def _exec_retry(self, action: VerbAction, ctx: ExecutionContext) -> ExecutionResult:
+        """Re-execute the previous VerbAction with backoff until success or exhausted."""
+        # Nothing to retry if last step succeeded
+        last = ctx.log[-1] if ctx.log else None
+        if last is None or last["status"] != "error":
+            r = _make_result("RETRY", [], action.params, ctx.last_output, "ok", 0,
+                             "RETRY -> no prior failure, skipped")
+            ctx.log.append(r)
+            return r
+
+        prev = ctx.prev_verb_action
+        if prev is None:
+            raise ShaunRuntimeError("RETRY: no prior verb action recorded in context")
+
+        attempts    = int(action.params.get("attempts", 3))
+        backoff_mode = action.params.get("backoff", "exp")
+
+        for attempt in range(attempts):
+            wait_s = _backoff_seconds(attempt, backoff_mode)
+            if wait_s > 0:
+                time.sleep(wait_s)
+            result = self._exec_verb(prev, ctx)
+            if result["status"] == "ok":
+                r = _make_result("RETRY", [], action.params, result["output"], "ok",
+                                 0, f"RETRY -> '{prev.verb}' succeeded on attempt {attempt + 1}/{attempts}")
+                ctx.log.append(r)
+                return r
+            ctx.log.append(result)
+
+        raise RetryExhausted(prev.verb, attempts)
+
+    # ── ROLLBACK ───────────────────────────────────────────────────────────────
+
+    def _exec_rollback(self, action: VerbAction, ctx: ExecutionContext) -> ExecutionResult:
+        """Restore ctx.variables and ctx.last_output from a named SNAP checkpoint."""
+        checkpoint = action.target[0] if action.target else action.params.get("to", "default")
+        snap_db = _Path.home() / ".praxis" / "snaps.db"
+
+        if not snap_db.exists():
+            raise ShaunRuntimeError("ROLLBACK: no snap database found — run SNAP first")
+
+        conn = _sqlite3.connect(str(snap_db))
+        row = conn.execute(
+            "SELECT variables, last_output FROM snapshots WHERE name = ?", (checkpoint,)
+        ).fetchone()
+        conn.close()
+
+        if row is None:
+            raise ShaunRuntimeError(f"ROLLBACK: checkpoint '{checkpoint}' not found")
+
+        ctx.variables   = _json.loads(row[0])
+        ctx.last_output = _json.loads(row[1])
+        r = _make_result("ROLLBACK", [checkpoint], {}, {"restored": checkpoint},
+                         "ok", 0, f"ROLLBACK -> restored checkpoint '{checkpoint}'")
         ctx.log.append(r)
         return r
 
@@ -340,6 +420,19 @@ def _make_result(
         "duration_ms": duration_ms,
         "log_entry": log_entry,
     }
+
+
+def _backoff_seconds(attempt: int, mode: str) -> float:
+    """Return seconds to wait before attempt N (attempt 0 = first retry = no wait)."""
+    if attempt == 0:
+        return 0.0
+    if mode == "exp":
+        return min(2.0 ** attempt, 30.0)   # 2, 4, 8, 16, 30 …
+    if mode == "linear":
+        return float(attempt) * 2.0         # 2, 4, 6, 8 …
+    if mode == "fixed":
+        return 5.0
+    return 0.0
 
 
 def _compare(left: Any, op: str, right: Any) -> bool:

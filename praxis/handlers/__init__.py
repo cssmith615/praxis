@@ -43,9 +43,7 @@ from praxis.handlers.deploy import (
 from praxis.handlers.control import (
     fork_handler,
 )
-from praxis.handlers.error import (
-    err_handler, retry_handler, rollback_handler,
-)
+from praxis.handlers.error import err_handler  # RETRY/ROLLBACK are executor-native
 from praxis.handlers.audit import (
     validate_handler, assert_handler, log_handler, gate_handler,
     snap_handler, annotate_handler, route_handler,
@@ -92,11 +90,10 @@ HANDLERS: dict = {
     "DEP":      dep_handler,
     "TEST":     test_handler,
 
-    # ── Control (non-executor-native) ──────────────────────────────────────────
+    # ── Control ────────────────────────────────────────────────────────────────
+    # RETRY and ROLLBACK are handled natively by the Executor (_exec_retry / _exec_rollback)
     "FORK":     fork_handler,
     "ERR":      err_handler,
-    "RETRY":    retry_handler,
-    "ROLLBACK": rollback_handler,
 
     # ── Audit ──────────────────────────────────────────────────────────────────
     "VALIDATE": validate_handler,
