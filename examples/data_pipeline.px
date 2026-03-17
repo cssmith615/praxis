@@ -1,0 +1,19 @@
+// ML training pipeline with safety gates
+// Ingests raw data, cleans, trains, evaluates, and deploys only if RMSE is acceptable.
+// GATE before DEP ensures human confirmation in production mode.
+
+GOAL:train_and_deploy
+
+ING.sales.db(period=90d) ->
+CLN.null ->
+NORM.standard ->
+SET.training_data ->
+TRN.xgboost(target=revenue, features=auto) ->
+SET.model ->
+EVAL.rmse(threshold=0.15) ->
+SET.score ->
+IF.$score < 0.15 ->
+  GATE ->
+  DEP.api(endpoint=predict, model=$model)
+ELSE ->
+  ALERT.slack(channel=ml-team, msg="Model rejected — RMSE " + $score + " exceeds threshold")

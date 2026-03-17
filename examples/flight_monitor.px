@@ -1,0 +1,12 @@
+// Flight price monitor
+// Checks Denver flights, alerts via Telegram if price drops under $200
+
+GOAL:flight_monitor
+
+ING.flights(dest=denver, origin=jfk) ->
+EVAL.price(threshold=200) ->
+SET.price ->
+IF.$price < 200 ->
+  OUT.telegram(msg="Flight drop! Denver from JFK: $" + $price)
+ELSE ->
+  LOG.info(msg="No drop — current price $" + $price)

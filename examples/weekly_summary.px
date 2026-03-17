@@ -1,0 +1,20 @@
+// Weekly business summary
+// Pulls sales, support tickets, and marketing metrics in parallel,
+// merges them, summarizes, and posts to Notion.
+
+GOAL:weekly_summary
+
+PAR(
+  ING.sales.db(period=week),
+  ING.support.tickets(period=week),
+  ING.marketing.metrics(period=week)
+) ->
+MERGE ->
+CLN.null ->
+SET.raw_data ->
+SUMM.text(max=500) ->
+SET.summary ->
+IF.$summary != "" ->
+  OUT.notion(page=weekly_report, content=$summary)
+ELSE ->
+  OUT.slack(channel=alerts, msg="Weekly summary failed — no data ingested")

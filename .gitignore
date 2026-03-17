@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+pip-wheel-metadata/
+.installed.cfg
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Distribution
+dist/
+*.whl
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Type checking
+.mypy_cache/
+.pytype/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Praxis runtime data
+~/.praxis/
+*.db
+
+# Secrets
+.env.local
+*.key
+secrets.json

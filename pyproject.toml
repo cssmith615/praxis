@@ -1,0 +1,95 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "praxis-lang"
+version = "0.1.0"
+description = "Praxis — an AI-native intermediate language and runtime for agentic workflows"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+authors = [
+    { name = "Praxis Contributors" },
+]
+keywords = [
+    "ai",
+    "agents",
+    "workflow",
+    "language",
+    "dsl",
+    "llm",
+    "agentic",
+    "orchestration",
+    "praxis",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# Core — parse, validate, run (no LLM, no embedder, no server)
+dependencies = [
+    "lark>=1.2.2",
+    "click>=8.1.7",
+    "rich>=13.7.0",
+    "pydantic>=2.7.0",
+    "numpy>=1.26.0",
+]
+
+[project.optional-dependencies]
+# AI planning via Anthropic Claude
+ai = [
+    "anthropic>=0.40.0",
+]
+# Semantic program memory (downloads PyTorch ~700 MB on first use)
+memory = [
+    "sentence-transformers>=3.0.0",
+]
+# FastAPI REST bridge
+bridge = [
+    "fastapi>=0.111.0",
+    "uvicorn>=0.30.0",
+    "httpx>=0.27.0",
+]
+# Everything
+all = [
+    "anthropic>=0.40.0",
+    "sentence-transformers>=3.0.0",
+    "fastapi>=0.111.0",
+    "uvicorn>=0.30.0",
+    "httpx>=0.27.0",
+]
+# Development
+dev = [
+    "pytest>=8.2.0",
+    "pytest-asyncio>=0.23.0",
+    "httpx>=0.27.0",
+    "anthropic>=0.40.0",
+    "fastapi>=0.111.0",
+    "uvicorn>=0.30.0",
+]
+
+[project.scripts]
+praxis = "praxis.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/qwibitai/praxis"
+Repository = "https://github.com/qwibitai/praxis"
+"Bug Tracker" = "https://github.com/qwibitai/praxis/issues"
+Changelog = "https://github.com/qwibitai/praxis/blob/main/CHANGELOG.md"
+
+[tool.hatch.build.targets.wheel]
+packages = ["praxis"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
