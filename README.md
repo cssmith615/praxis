@@ -619,6 +619,22 @@ The agent listens on Telegram and can:
 - **List / remove schedules** — manage what's running
 - **Recall** — search ProgramMemory for similar past programs
 
+### Multi-tier model routing
+
+The agent automatically routes each turn to the most cost-effective model:
+
+| Turn type | Routed to | Examples |
+|-----------|-----------|---------|
+| Simple commands | `claude-haiku-4-5` (~20× cheaper) | `run LOG.msg`, `validate ...`, `list my schedules`, `recall ...` |
+| Complex requests | `claude-sonnet-4-6` (full capability) | `plan goal: ...`, `schedule this every morning`, `create a workflow...` |
+
+This is completely automatic — no config needed. Override with `--fast-model` or set `PRAXIS_FAST_MODEL`. Disable with `--fast-model off`.
+
+```bash
+praxis agent --fast-model claude-haiku-4-5-20251001   # explicit (this is the default)
+praxis agent --fast-model off                          # always use full model
+```
+
 ### Context compaction
 
 Long-running agent sessions accumulate conversation history that inflates API costs over time. Praxis automatically compacts the conversation when it exceeds 20 messages: the older portion is summarised using `claude-haiku-4-5` (cheap), and the last 10 messages are kept verbatim. The summary is injected as a single context message so the agent never loses thread.
@@ -761,7 +777,7 @@ The improvement loop closes the feedback cycle: programs run → failures are lo
 | **v0.9** | ✅ Released | CAP enforcement at runtime; optimizer (parallelization, dead step elimination, constant folding); performance rewriter; TypeScript + WASM code generators; process isolation sandbox; outcome-driven program evolution |
 | **v1.0** | ✅ Released | Interactive REPL (`praxis chat`); VS Code extension with syntax highlighting, inline validation, and run commands; Chuck integration (`chuck add praxis`) |
 | **v1.1** | ✅ Released | Distributed workers: `SPAWN` with `url=` routes over HTTP; hub registration/heartbeat/dispatch on bridge; `praxis worker` CLI; `WorkerClient` discovery |
-| **v1.2** | ✅ Released | Praxis Agent: native Claude tool-use loop with 7 Praxis tools; Telegram channel (urllib, no new deps); `praxis agent` CLI; Docker-ready; replaces NanoClaw. Full XFRM/FILTER/SORT handler implementations; FETCH fan-out (`$item` substitution over lists); `src=` param alias; `OUT.telegram` built-in channel. **Sprint 24:** `OUT.slack` + `OUT.discord` (incoming webhook, no extra deps); memory temporal decay (recency-weighted retrieval, `last_used_at` tracking); agent context compaction (auto-summarise at 20 messages, keep last 10 verbatim); [SHIELD.md](SHIELD.md) security policy. 716 tests passing. |
+| **v1.2** | ✅ Released | Praxis Agent: native Claude tool-use loop with 7 Praxis tools; Telegram channel (urllib, no new deps); `praxis agent` CLI; Docker-ready; replaces NanoClaw. Full XFRM/FILTER/SORT handler implementations; FETCH fan-out (`$item` substitution over lists); `src=` param alias; `OUT.telegram` built-in channel. **Sprint 24:** `OUT.slack` + `OUT.discord` (incoming webhook, no extra deps); memory temporal decay (recency-weighted retrieval, `last_used_at` tracking); agent context compaction (auto-summarise at 20 messages, keep last 10 verbatim); [SHIELD.md](SHIELD.md) security policy. **Sprint 25:** Multi-tier model routing — simple requests auto-routed to Haiku (~20× cheaper), complex planning/scheduling stays on Sonnet; `--fast-model` CLI flag. 750 tests passing. |
 
 ---
 
