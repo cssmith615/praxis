@@ -168,13 +168,26 @@ export DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/YOUR/WEBHOOK
 SUMM.text(max=500) -> OUT.discord
 ```
 
-All three channels split long messages automatically (Telegram: 4096 chars, Discord: 2000 chars). `OUT.slack` and `OUT.discord` work with no installation beyond `praxis-lang` — they use stdlib `urllib`, no extra dependencies.
+**X / Twitter** (post to your timeline)
+```bash
+export X_API_KEY=...
+export X_API_SECRET=...
+export X_ACCESS_TOKEN=...
+export X_ACCESS_TOKEN_SECRET=...
+```
+```
+GEN.post(topic=$topic, max=280) -> OUT.x
+```
+`OUT.x` auto-truncates to 280 characters. Works via `tweepy` if installed, or falls back to stdlib OAuth 1.0a — no extra dependency required.
+
+All channels split long messages automatically (Telegram: 4096 chars, Discord: 2000 chars). `OUT.slack`, `OUT.discord`, and `OUT.x` use stdlib only — no extra dependencies.
 
 | Channel | Env var | Param override | Max chunk |
 |---------|---------|---------------|-----------|
 | `OUT.telegram` | `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` | `token=`, `chat_id=` | 4096 chars |
 | `OUT.slack` | `SLACK_WEBHOOK_URL` | `webhook=` | unlimited (Slack handles it) |
 | `OUT.discord` | `DISCORD_WEBHOOK_URL` | `webhook=` | 2000 chars |
+| `OUT.x` | `X_API_KEY` + `X_API_SECRET` + `X_ACCESS_TOKEN` + `X_ACCESS_TOKEN_SECRET` | — | 280 chars (auto-truncated) |
 
 Praxis plans, validates, executes, and stores the program. Next time you run a similar goal it retrieves and adapts the stored version instead of generating from scratch.
 
@@ -453,7 +466,7 @@ ING.build -> GATE -> DEP.api
 
 ## Web Dashboard
 
-v0.7 ships `praxis serve` — a local dashboard that makes everything visible in one place.
+`praxis serve` is a local dashboard that makes everything visible in one place.
 
 ```bash
 praxis serve              # http://localhost:7822
@@ -461,7 +474,7 @@ praxis serve --port 8080
 praxis serve --open       # auto-opens browser
 ```
 
-Five tabs:
+Nine tabs:
 
 | Tab | What it shows |
 |-----|---------------|
@@ -470,8 +483,101 @@ Five tabs:
 | **Logs** | Live execution history from `~/.praxis/execution.log`, filterable |
 | **Constitution** | All constitutional rules with inline add form |
 | **Editor** | Write and run Praxis programs in-browser, step-by-step results, Ctrl+Enter to run |
+| **Schedules** | Active cron schedules — view, pause, delete, see last run time |
+| **Webhooks** | Registered webhook triggers — create, view, delete, copy endpoint URL |
+| **Activity** | Live activity feed of every run and webhook trigger (verb, status, timing) |
+| **Audit** | Constitutional audit reports — verbs used, rules checked, violations per run |
 
 The dashboard is a single self-contained HTML page served by FastAPI — no build step, no npm, no external CDN. It works completely offline.
+
+---
+
+## Persistent Variables
+
+Variables in a Praxis program live only for the duration of that run by default. Use `persist=true` on `SET` to write a value to a local key-value store, then `LOAD` to read it back in any future run — cross-session state without a database schema.
+
+```
+# Run 1 — store the last price seen
+FETCH.price(src=$url) -> SET.last_price(persist=true)
+
+# Run 2 (hours later) — compare against it
+LOAD.last_price -> EVAL.threshold(value=$price, min=$last_price) -> OUT.telegram
+```
+
+Values are stored in `~/.praxis/kv.db` (SQLite). `SET` without `persist=true` behaves exactly as before — in-memory only, no side effects.
+
+---
+
+## Webhook Triggers
+
+Register a program against an HTTP endpoint and fire it from any external service — Slack, GitHub, Zapier, or a plain `curl`:
+
+```bash
+# Register a webhook
+curl -X POST http://localhost:7822/api/webhooks \
+  -H "Content-Type: application/json" \
+  -d '{"name": "github-push", "program_text": "LOG.event -> OUT.telegram"}'
+# → {"id": "wh-abc123", "url": "/webhook/wh-abc123"}
+
+# Fire it
+curl -X POST http://localhost:7822/webhook/wh-abc123 \
+  -H "Content-Type: application/json" \
+  -d '{"ref": "refs/heads/main", "pusher": "cssmith615"}'
+```
+
+The incoming payload is available as `$event` in the program. Webhook runs appear in the Activity feed and generate a constitutional audit record exactly like `praxis run` does.
+
+---
+
+## Plugin Handlers
+
+Drop a Python file into `~/.praxis/handlers/` and Praxis loads it automatically at startup — no config, no import statements. This is the "Lua for AI apps" extension point.
+
+```python
+# ~/.praxis/handlers/my_handler.py
+
+VERB_NAME = "NOTIFY"   # the verb this handler owns
+
+def handle(target, params, context):
+    # target: the dot-path after VERB (e.g. "slack.channel")
+    # params: dict of key=value params from the program
+    # context: ExecutionContext — read/write variables, last_output
+    send_notification(params.get("msg", context.last_output))
+    return {"status": "ok", "log_entry": "notification sent"}
+```
+
+After saving the file, restart `praxis` (or the `praxis serve` server) and your new verb is live:
+
+```
+LOG.data -> NOTIFY.slack(msg=$data)
+```
+
+Handlers that fail to load are logged and skipped — they never crash the runtime.
+
+---
+
+## Program Registry
+
+Search, install, and publish community programs with three commands:
+
+```bash
+# Search the registry
+praxis search news
+# → news-brief  Fetch top Hacker News stories and summarize to Telegram  [news, summarize, hacker-news, telegram]
+
+# Install a program into your local memory
+praxis install news-brief
+# → Installed: news-brief (Fetch top Hacker News stories and summarize to Telegram)
+
+# Publish your own program
+praxis publish my-workflow.px --name "price-alert" \
+  --description "Alert on price drops" \
+  --tags "price,alert,telegram" \
+  --author cssmith615
+# → Created price-alert.px and price-alert.json
+```
+
+The registry index is a JSON file (`registry/index.json` in the repo). It falls back to the bundled local copy if the remote fetch fails — `praxis search` and `praxis install` work completely offline.
 
 ---
 
@@ -778,6 +884,7 @@ The improvement loop closes the feedback cycle: programs run → failures are lo
 | **v1.0** | ✅ Released | Interactive REPL (`praxis chat`); VS Code extension with syntax highlighting, inline validation, and run commands; Chuck integration (`chuck add praxis`) |
 | **v1.1** | ✅ Released | Distributed workers: `SPAWN` with `url=` routes over HTTP; hub registration/heartbeat/dispatch on bridge; `praxis worker` CLI; `WorkerClient` discovery |
 | **v1.2** | ✅ Released | Praxis Agent: native Claude tool-use loop with 7 Praxis tools; Telegram channel (urllib, no new deps); `praxis agent` CLI; Docker-ready; replaces NanoClaw. Full XFRM/FILTER/SORT handler implementations; FETCH fan-out (`$item` substitution over lists); `src=` param alias; `OUT.telegram` built-in channel. **Sprint 24:** `OUT.slack` + `OUT.discord` (incoming webhook, no extra deps); memory temporal decay (recency-weighted retrieval, `last_used_at` tracking); agent context compaction (auto-summarise at 20 messages, keep last 10 verbatim); [SHIELD.md](SHIELD.md) security policy. **Sprint 25:** Multi-tier model routing — simple requests auto-routed to Haiku (~20× cheaper), complex planning/scheduling stays on Sonnet; `--fast-model` CLI flag. 750 tests passing. |
+| **v1.3** | ✅ Released | **Sprint 26:** Schedules tab in `praxis serve` dashboard. **Sprint 27:** Persistent `SET`/`LOAD` — cross-run key-value state in `~/.praxis/kv.db`; `initial_variables` for executor pre-loading. **Sprint 28:** Webhook triggers (`POST /webhook/{id}` fires registered programs with `$event` payload); `OUT.x` (X/Twitter posting via tweepy or stdlib OAuth 1.0a); plugin handler auto-loader (`~/.praxis/handlers/*.py`); Activity feed tab in dashboard. **Sprint 29:** Constitutional Audit Reports — post-run verb extraction, rule matching, violation detection, plain-English summary; Audit tab in dashboard. **Sprint 30:** Program Registry — `praxis install`, `praxis search`, `praxis publish`; bundled `registry/index.json` with 8 starter programs; remote fetch with local fallback. 850 tests passing. |
 
 ---
 
