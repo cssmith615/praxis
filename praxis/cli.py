@@ -660,6 +660,10 @@ def chat_cmd(mode: str, db: str | None, provider: str | None, model: str | None)
 @click.option("--model", default=None, help="Model override for the chosen provider")
 @click.option("--agent-model", default="claude-sonnet-4-6", show_default=True,
               help="Claude model for the agent conversation loop")
+@click.option("--fast-model", default=None, envvar="PRAXIS_FAST_MODEL",
+              help="Model for simple requests (multi-tier routing). "
+                   "Default: claude-haiku-4-5-20251001. "
+                   "Set to 'off' to disable routing. Env: PRAXIS_FAST_MODEL")
 @click.option("--schedule/--no-schedule", default=False,
               help="Enable the Scheduler background thread")
 @click.option("--memory/--no-memory", "use_memory", default=False,
@@ -675,6 +679,7 @@ def agent_cmd(
     provider: str | None,
     model: str | None,
     agent_model: str,
+    fast_model: str | None,
     schedule: bool,
     use_memory: bool,
     db: str | None,
@@ -726,7 +731,13 @@ def agent_cmd(
         trigger_word=trigger,
     )
 
-    agent = PraxisAgent(model=agent_model, api_key=api_key)
+    router_enabled = fast_model != "off"
+    agent = PraxisAgent(
+        model=agent_model,
+        api_key=api_key,
+        fast_model=fast_model if router_enabled else None,
+        router_enabled=router_enabled,
+    )
 
     runner = AgentRunner(
         agent=agent,
@@ -739,8 +750,11 @@ def agent_cmd(
         db_path=db,
     )
 
+    fast_display = fast_model or "claude-haiku-4-5-20251001"
+    routing_display = f"off" if not router_enabled else f"fast={fast_display}"
     console.print(
-        f"\n[bold cyan]Praxis Agent[/]  model=[bold]{agent_model}[/]  mode={mode}"
+        f"\n[bold cyan]Praxis Agent[/]  model=[bold]{agent_model}[/]  "
+        f"routing=[bold]{routing_display}[/]  mode={mode}"
     )
     if allowed:
         console.print(f"  chat whitelist: {sorted(allowed)}")

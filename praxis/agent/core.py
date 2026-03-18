@@ -4,13 +4,14 @@ PraxisAgent — Anthropic SDK tool-use loop.
 Flow per turn
 -------------
 1.  Receive text message from a Channel
-2.  Append to AgentContext.messages as a user turn
-3.  Call anthropic.messages.create() with TOOL_DEFINITIONS
-4.  If the response has tool_use blocks: execute each tool, append
-    tool_result, loop back to step 3
-5.  When the response is stop_reason == "end_turn" with a text block:
+2.  Route message to fast or full model (Sprint 25 multi-tier routing)
+3.  Append to AgentContext.messages as a user turn
+4.  Call anthropic.messages.create() with TOOL_DEFINITIONS
+5.  If the response has tool_use blocks: execute each tool, append
+    tool_result, loop back to step 4 (using the same tier for the turn)
+6.  When the response is stop_reason == "end_turn" with a text block:
     return the assistant reply to the caller
-6.  Caller (AgentRunner) forwards the reply to the Channel
+7.  Caller (AgentRunner) forwards the reply to the Channel
 
 The loop is intentionally synchronous per conversation turn so the
 context array stays coherent. Parallel tool execution within one
@@ -20,11 +21,15 @@ Praxis's own PAR/threading handles any internal concurrency).
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
 from praxis.agent.context import AgentContext
+from praxis.agent.router import ModelRouter
 from praxis.agent.tools import TOOL_DEFINITIONS, execute_tool
+
+log = logging.getLogger(__name__)
 
 try:
     import anthropic
@@ -66,11 +71,16 @@ class PraxisAgent:
     Parameters
     ----------
     model:
-        Claude model id. Defaults to claude-sonnet-4-6.
+        Claude model id for complex requests. Defaults to claude-sonnet-4-6.
     api_key:
         Anthropic API key. Falls back to ANTHROPIC_API_KEY env var.
     max_tokens:
         Max tokens per assistant response. Default: 2048.
+    fast_model:
+        Model id for simple requests (multi-tier routing). Defaults to
+        claude-haiku-4-5-20251001. Set to None to disable routing.
+    router_enabled:
+        If False, every turn uses *model* regardless of complexity.
     """
 
     def __init__(
@@ -78,6 +88,8 @@ class PraxisAgent:
         model: str = "claude-sonnet-4-6",
         api_key: str | None = None,
         max_tokens: int = 2048,
+        fast_model: str | None = None,
+        router_enabled: bool = True,
     ) -> None:
         if anthropic is None:
             raise ImportError(
@@ -90,6 +102,11 @@ class PraxisAgent:
         )
         self.model = model
         self.max_tokens = max_tokens
+        self._router = ModelRouter(
+            fast_model=fast_model,
+            full_model=model,
+            enabled=router_enabled,
+        )
 
     # ── Public API ─────────────────────────────────────────────────────────
 
@@ -100,20 +117,24 @@ class PraxisAgent:
         Mutates ctx.messages in-place. Thread-safe per-context via ctx._lock.
         """
         with ctx._lock:
+            decision = self._router.route(user_message)
+            log.debug("router: %s → %s (%s)", decision.tier, decision.model, decision.reason)
             ctx.add_user_message(user_message)
-            reply = self._run_tool_loop(ctx)
+            reply = self._run_tool_loop(ctx, model=decision.model)
             return reply
 
     # ── Internal tool-use loop ─────────────────────────────────────────────
 
-    def _run_tool_loop(self, ctx: AgentContext) -> str:
+    def _run_tool_loop(self, ctx: AgentContext, model: str | None = None) -> str:
         """Keep calling the API until we get an end_turn with a text block."""
+        active_model = model or self.model
+
         # Compact conversation if it has grown too large
         ctx.maybe_compact(self._client, "claude-haiku-4-5-20251001")
 
         for _round in range(_MAX_TOOL_ROUNDS):
             response = self._client.messages.create(
-                model=self.model,
+                model=active_model,
                 max_tokens=self.max_tokens,
                 system=_SYSTEM_PROMPT,
                 tools=TOOL_DEFINITIONS,
