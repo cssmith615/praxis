@@ -867,6 +867,34 @@ def agent_cmd(
     runner.run()
 
 
+@main.command("mcp")
+def mcp_cmd():
+    """
+    Start the Praxis MCP server (stdio transport).
+
+    Exposes Praxis tools to Claude Code, Cursor, Zed, and any MCP-aware host.
+
+    Add to Claude Code settings.json:
+
+    \b
+      {
+        "mcpServers": {
+          "praxis": {
+            "command": "praxis",
+            "args": ["mcp"]
+          }
+        }
+      }
+
+    Tools: run_program, validate_program, plan_goal, recall_similar,
+           search_registry, install_program, get_constitution
+
+    Resources: praxis://constitution, praxis://programs
+    """
+    from praxis.mcp_server import run_server
+    run_server()
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
