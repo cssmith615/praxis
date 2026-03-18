@@ -53,3 +53,5 @@ Thumbs.db
 *.key
 secrets.json
 praxis-vscode/*.vsix
+node_modules/
+praxis-vscode/node_modules/

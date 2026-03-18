@@ -168,21 +168,66 @@ def _send_telegram(msg: str, params: dict) -> dict:
     return {"delivered": True, "chunks": len(chunks), "chat_id": chat_id}
 
 
+def _send_slack(msg: str, params: dict) -> dict:
+    """Send a message to a Slack incoming webhook (no bot setup required)."""
+    webhook = params.get("webhook") or os.environ.get("SLACK_WEBHOOK_URL", "")
+    if not webhook:
+        raise ValueError(
+            "OUT.slack requires a webhook URL — pass webhook= param or set SLACK_WEBHOOK_URL"
+        )
+    payload = json.dumps({"text": msg}).encode()
+    req = urllib.request.Request(webhook, data=payload, method="POST")
+    req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        pass  # Slack returns "ok" as plain text with HTTP 200
+    return {"ok": True, "channel": "slack"}
+
+
+def _send_discord(msg: str, params: dict) -> dict:
+    """Send a message to a Discord incoming webhook."""
+    webhook = params.get("webhook") or os.environ.get("DISCORD_WEBHOOK_URL", "")
+    if not webhook:
+        raise ValueError(
+            "OUT.discord requires a webhook URL — pass webhook= param or set DISCORD_WEBHOOK_URL"
+        )
+    # Discord has a 2000-char message limit
+    chunks = [msg[i:i + 2000] for i in range(0, max(len(msg), 1), 2000)]
+    for chunk in chunks:
+        payload = json.dumps({"content": chunk}).encode()
+        req = urllib.request.Request(webhook, data=payload, method="POST")
+        req.add_header("Content-Type", "application/json")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            pass  # Discord returns 204 No Content on success
+    return {"ok": True, "channel": "discord", "chunks": len(chunks)}
+
+
 def out_handler(target: list[str], params: dict, ctx) -> Any:
     """OUT — Send to a named channel.
 
     Built-in channels:
       OUT.telegram   — sends via Telegram Bot API (reads TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID)
+      OUT.slack      — sends via Slack incoming webhook (reads SLACK_WEBHOOK_URL)
+      OUT.discord    — sends via Discord incoming webhook (reads DISCORD_WEBHOOK_URL)
       OUT.console    — prints to stdout (default)
 
     Extend with register_out_channel() for custom channels.
     """
     channel = target[0] if target else "console"
-    msg = params.get("msg", str(ctx.last_output) if ctx.last_output is not None else "")
+    msg = params.get("message") or params.get("msg") or (
+        str(ctx.last_output) if ctx.last_output is not None else ""
+    )
 
     if channel == "telegram":
         result = _send_telegram(msg, params)
         return {"channel": "telegram", "msg": msg, **result}
+
+    if channel == "slack":
+        result = _send_slack(msg, params)
+        return {"channel": "slack", "msg": msg, **result}
+
+    if channel == "discord":
+        result = _send_discord(msg, params)
+        return {"channel": "discord", "msg": msg, **result}
 
     if channel in _OUT_CHANNELS:
         result = _OUT_CHANNELS[channel](msg, params)

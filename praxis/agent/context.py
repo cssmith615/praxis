@@ -9,13 +9,26 @@ It holds:
 
 Singletons are lazy-initialised on first access so the agent starts quickly
 and we don't pay for sentence-transformer load time if memory is never used.
+
+Context compaction (Sprint 24B)
+--------------------------------
+When the conversation grows beyond COMPACT_THRESHOLD messages, maybe_compact()
+summarises all but the most recent KEEP_RECENT messages using a cheap model
+(claude-haiku-4-5) and replaces them with a single summary message.  This caps
+context growth while preserving continuity.
 """
 
 from __future__ import annotations
 
+import logging
 import threading
 from dataclasses import dataclass, field
 from typing import Any
+
+log = logging.getLogger(__name__)
+
+COMPACT_THRESHOLD = 20   # compact when conversation exceeds this many messages
+KEEP_RECENT       = 10   # keep this many recent messages verbatim after compaction
 
 from praxis.executor import Executor
 from praxis.handlers import HANDLERS
@@ -89,7 +102,74 @@ class AgentContext:
             }],
         })
 
+    def add(self, role: str, content: str) -> None:
+        """Convenience wrapper — add a plain text message with the given role."""
+        self.messages.append({"role": role, "content": content})
+
     def clear(self) -> None:
         """Reset conversation (keep singletons)."""
         self.messages.clear()
         self.state.clear()
+
+    # ── Context compaction ─────────────────────────────────────────────────
+
+    def maybe_compact(self, client: Any, model: str) -> None:
+        """
+        If the conversation exceeds COMPACT_THRESHOLD messages, summarise the
+        older portion with *model* (use a cheap model like claude-haiku-4-5)
+        and replace it with a single summary message, keeping the last
+        KEEP_RECENT messages verbatim.
+
+        Safe to call with client=None — will skip compaction silently.
+        """
+        if client is None or len(self.messages) <= COMPACT_THRESHOLD:
+            return
+
+        to_summarise = self.messages[:-KEEP_RECENT]
+        recent       = self.messages[-KEEP_RECENT:]
+
+        # Build a plain-text transcript for the summary request
+        transcript_parts = []
+        for m in to_summarise:
+            role = m.get("role", "unknown")
+            content = m.get("content", "")
+            if isinstance(content, list):
+                # tool-result or multi-block messages — extract text
+                parts = [
+                    b.get("content", "") if isinstance(b, dict) else str(b)
+                    for b in content
+                ]
+                content = " ".join(str(p) for p in parts if p)
+            transcript_parts.append(f"{role.upper()}: {content}")
+
+        transcript = "\n".join(transcript_parts)
+
+        prompt = (
+            "You are summarising a conversation between a user and an AI assistant. "
+            "Produce a concise summary (3-8 sentences) that captures the key topics, "
+            "decisions, and context needed to continue the conversation coherently. "
+            "Do not include greetings or filler.\n\n"
+            f"CONVERSATION:\n{transcript}"
+        )
+
+        try:
+            response = client.messages.create(
+                model=model,
+                max_tokens=512,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            summary_text = response.content[0].text
+        except Exception as exc:
+            log.warning("Context compaction failed (%s) — keeping full history", exc)
+            return
+
+        summary_message = {
+            "role": "user",
+            "content": f"[Conversation summary — earlier context]\n{summary_text}",
+        }
+        self.messages = [summary_message] + list(recent)
+        log.info(
+            "Context compacted: %d messages → 1 summary + %d recent",
+            len(to_summarise),
+            len(recent),
+        )

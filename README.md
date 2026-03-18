@@ -132,10 +132,11 @@ export ANTHROPIC_API_KEY=sk-ant-...
 praxis goal "fetch the top 5 HN stories and summarize them"
 ```
 
-### Send output to Telegram
+### Send output to Telegram, Slack, or Discord
 
-Set your credentials once and any program can push results to your phone:
+Set your credentials once and any program can push results to your preferred channel:
 
+**Telegram**
 ```bash
 export TELEGRAM_BOT_TOKEN=your-token-from-botfather
 export TELEGRAM_CHAT_ID=your-chat-id
@@ -150,7 +151,30 @@ XFRM.join(sep="\n") ->
 OUT.telegram
 ```
 
-`OUT.telegram` reads `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` from env. Override per-call with `token=` and `chat_id=` params. Works in `praxis run`, `praxis goal`, the REPL, and scheduled programs.
+**Slack** (incoming webhook — no bot setup required)
+```bash
+export SLACK_WEBHOOK_URL=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
+```
+```
+SUMM.text(max=500) -> OUT.slack
+```
+Or pass the webhook inline: `OUT.slack(webhook="https://hooks.slack.com/...")`
+
+**Discord** (incoming webhook, same pattern)
+```bash
+export DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/YOUR/WEBHOOK
+```
+```
+SUMM.text(max=500) -> OUT.discord
+```
+
+All three channels split long messages automatically (Telegram: 4096 chars, Discord: 2000 chars). `OUT.slack` and `OUT.discord` work with no installation beyond `praxis-lang` — they use stdlib `urllib`, no extra dependencies.
+
+| Channel | Env var | Param override | Max chunk |
+|---------|---------|---------------|-----------|
+| `OUT.telegram` | `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` | `token=`, `chat_id=` | 4096 chars |
+| `OUT.slack` | `SLACK_WEBHOOK_URL` | `webhook=` | unlimited (Slack handles it) |
+| `OUT.discord` | `DISCORD_WEBHOOK_URL` | `webhook=` | 2000 chars |
 
 Praxis plans, validates, executes, and stores the program. Next time you run a similar goal it retrieves and adapts the stored version instead of generating from scratch.
 
@@ -312,6 +336,20 @@ similar = mem.retrieve_similar("check flight prices", k=3)
 for p in similar:
     print(f"{p.similarity:.2f}  {p.goal_text}")
 ```
+
+### Memory Temporal Decay
+
+Retrieval is **recency-weighted** — programs you use often stay at the top; programs that haven't been touched in months gradually stop crowding out fresher alternatives. The scoring formula is:
+
+```
+adjusted_score = 0.8 × cosine_similarity  +  0.2 × 0.5^(days_since_last_use / 90)
+```
+
+- At 0 days old, the recency bonus is `0.2 × 1.0 = 0.2` (full weight).
+- At 90 days old, the recency bonus halves to `0.2 × 0.5 = 0.1`.
+- At 180 days old it halves again to `0.2 × 0.25 = 0.05`.
+
+Similarity still dominates (80%), so a very relevant old program still beats a slightly-similar new one. Recency just breaks ties and prevents your library from being dominated by ancient programs. The `last_used_at` timestamp is updated automatically every time a program is retrieved.
 
 ### Bring Your Own Embedder
 
@@ -581,6 +619,12 @@ The agent listens on Telegram and can:
 - **List / remove schedules** — manage what's running
 - **Recall** — search ProgramMemory for similar past programs
 
+### Context compaction
+
+Long-running agent sessions accumulate conversation history that inflates API costs over time. Praxis automatically compacts the conversation when it exceeds 20 messages: the older portion is summarised using `claude-haiku-4-5` (cheap), and the last 10 messages are kept verbatim. The summary is injected as a single context message so the agent never loses thread.
+
+This is transparent — you don't need to configure anything. The agent always keeps recent messages intact, so in-progress tasks aren't interrupted by compaction.
+
 ### Docker (production)
 
 ```bash
@@ -717,7 +761,7 @@ The improvement loop closes the feedback cycle: programs run → failures are lo
 | **v0.9** | ✅ Released | CAP enforcement at runtime; optimizer (parallelization, dead step elimination, constant folding); performance rewriter; TypeScript + WASM code generators; process isolation sandbox; outcome-driven program evolution |
 | **v1.0** | ✅ Released | Interactive REPL (`praxis chat`); VS Code extension with syntax highlighting, inline validation, and run commands; Chuck integration (`chuck add praxis`) |
 | **v1.1** | ✅ Released | Distributed workers: `SPAWN` with `url=` routes over HTTP; hub registration/heartbeat/dispatch on bridge; `praxis worker` CLI; `WorkerClient` discovery |
-| **v1.2** | ✅ Released | Praxis Agent: native Claude tool-use loop with 7 Praxis tools; Telegram channel (urllib, no new deps); `praxis agent` CLI; Docker-ready; replaces NanoClaw. Full XFRM/FILTER/SORT handler implementations; FETCH fan-out (`$item` substitution over lists); `src=` param alias; `OUT.telegram` built-in channel (env-var credentials, message splitting). 724 tests passing. |
+| **v1.2** | ✅ Released | Praxis Agent: native Claude tool-use loop with 7 Praxis tools; Telegram channel (urllib, no new deps); `praxis agent` CLI; Docker-ready; replaces NanoClaw. Full XFRM/FILTER/SORT handler implementations; FETCH fan-out (`$item` substitution over lists); `src=` param alias; `OUT.telegram` built-in channel. **Sprint 24:** `OUT.slack` + `OUT.discord` (incoming webhook, no extra deps); memory temporal decay (recency-weighted retrieval, `last_used_at` tracking); agent context compaction (auto-summarise at 20 messages, keep last 10 verbatim); [SHIELD.md](SHIELD.md) security policy. 716 tests passing. |
 
 ---
 

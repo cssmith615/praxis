@@ -108,6 +108,9 @@ class PraxisAgent:
 
     def _run_tool_loop(self, ctx: AgentContext) -> str:
         """Keep calling the API until we get an end_turn with a text block."""
+        # Compact conversation if it has grown too large
+        ctx.maybe_compact(self._client, "claude-haiku-4-5-20251001")
+
         for _round in range(_MAX_TOOL_ROUNDS):
             response = self._client.messages.create(
                 model=self.model,

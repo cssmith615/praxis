@@ -1,5 +1,5 @@
 """
-Shaun Program Memory
+Praxis Program Memory
 
 SQLite-backed library of past Praxis programs. Every successful (or failed)
 execution is stored with its goal embedding so future goals can retrieve and
@@ -8,13 +8,16 @@ adapt similar programs rather than generating from scratch.
 Storage format:
   ~/.praxis/programs.db — default location
   Table: programs (id, goal_text, goal_embedding BLOB, shaun_program,
-                   outcome, execution_log JSON, created_at)
+                   outcome, execution_log JSON, created_at, last_used_at)
 
 Retrieval:
   - Embed the new goal with sentence-transformers (all-MiniLM-L6-v2)
   - Cosine similarity against all stored goal embeddings (numpy dot product
     on normalized vectors — O(n) scan; fine until ~50k rows, index later)
-  - Return top-k sorted by similarity
+  - Recency-weighted score: adjusted = (1 - RECENCY_WEIGHT) * similarity
+                                       + RECENCY_WEIGHT * recency_score
+    where recency_score = 0.5 ** (days_since_last_use / RECENCY_HALF_LIFE_DAYS)
+  - Return top-k sorted by adjusted score descending
 
 Adaptation threshold:
   similarity >= 0.85 → adapt existing program (planner told to reuse structure)
@@ -42,8 +45,10 @@ import numpy as np
 # Data types
 # ──────────────────────────────────────────────────────────────────────────────
 
-ADAPT_THRESHOLD = 0.85   # similarity >= this → tell planner to adapt
-DEFAULT_DB_PATH = Path.home() / ".shaun" / "programs.db"
+ADAPT_THRESHOLD        = 0.85   # similarity >= this → tell planner to adapt
+DEFAULT_DB_PATH        = Path.home() / ".praxis" / "programs.db"
+RECENCY_WEIGHT         = 0.2    # weight of recency term in adjusted score
+RECENCY_HALF_LIFE_DAYS = 90     # days until recency score halves
 
 
 @dataclass
@@ -55,6 +60,7 @@ class StoredProgram:
     execution_log: list[dict]
     created_at: str
     similarity: float = 0.0           # filled by retrieve_similar
+    last_used_at: str | None = None   # updated on every retrieval
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -91,13 +97,14 @@ class ProgramMemory:
         with self._conn() as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS programs (
-                    id           TEXT PRIMARY KEY,
-                    goal_text    TEXT NOT NULL,
+                    id            TEXT PRIMARY KEY,
+                    goal_text     TEXT NOT NULL,
                     goal_embedding BLOB,
                     shaun_program  TEXT NOT NULL,
-                    outcome      TEXT NOT NULL,
+                    outcome       TEXT NOT NULL,
                     execution_log TEXT,
-                    created_at   TEXT NOT NULL
+                    created_at    TEXT NOT NULL,
+                    last_used_at  TEXT
                 )
             """)
             # Index on created_at for chronological queries
@@ -105,6 +112,10 @@ class ProgramMemory:
                 CREATE INDEX IF NOT EXISTS idx_programs_created
                 ON programs (created_at)
             """)
+            # Migrate existing DBs: add last_used_at if missing
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(programs)").fetchall()}
+            if "last_used_at" not in cols:
+                conn.execute("ALTER TABLE programs ADD COLUMN last_used_at TEXT")
 
     def _conn(self) -> sqlite3.Connection:
         return sqlite3.connect(str(self.db_path))
@@ -148,8 +159,8 @@ class ProgramMemory:
 
         with self._conn() as conn:
             conn.execute(
-                "INSERT INTO programs VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (pid, goal, blob, program, outcome, json.dumps(log), now),
+                "INSERT INTO programs VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (pid, goal, blob, program, outcome, json.dumps(log), now, now),
             )
         return pid
 
@@ -157,21 +168,26 @@ class ProgramMemory:
 
     def retrieve_similar(self, goal: str, k: int = 3) -> list[StoredProgram]:
         """
-        Return up to k stored programs most similar to goal, sorted by
-        cosine similarity descending.
+        Return up to k stored programs most similar to goal, sorted by a
+        recency-weighted score:
+            adjusted = (1 - RECENCY_WEIGHT) * similarity
+                       + RECENCY_WEIGHT * 0.5^(days_since_last_use / RECENCY_HALF_LIFE_DAYS)
+        This keeps highly relevant programs at the top while gently demoting
+        programs that haven't been used in a long time.
         """
         query_vec = self._embed(goal)
+        now = datetime.now(timezone.utc)
 
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT id, goal_text, goal_embedding, shaun_program, "
-                "outcome, execution_log, created_at FROM programs"
+                "outcome, execution_log, created_at, last_used_at FROM programs"
             ).fetchall()
 
         if not rows:
             return []
 
-        scored: list[tuple[float, Any]] = []
+        scored: list[tuple[float, float, Any]] = []
         for row in rows:
             if row[2] is None:
                 continue
@@ -179,12 +195,34 @@ class ProgramMemory:
             if len(stored_vec) != len(query_vec):
                 continue
             similarity = float(np.dot(query_vec, stored_vec))
-            scored.append((similarity, row))
+            # Recency score: 1.0 if used today, halves every RECENCY_HALF_LIFE_DAYS days
+            last_used_str = row[7] or row[6]   # fall back to created_at
+            try:
+                last_used = datetime.fromisoformat(last_used_str)
+                if last_used.tzinfo is None:
+                    last_used = last_used.replace(tzinfo=timezone.utc)
+                days_old = max(0.0, (now - last_used).total_seconds() / 86400)
+            except (ValueError, TypeError):
+                days_old = 0.0
+            recency_score = 0.5 ** (days_old / RECENCY_HALF_LIFE_DAYS)
+            adjusted = (1 - RECENCY_WEIGHT) * similarity + RECENCY_WEIGHT * recency_score
+            scored.append((adjusted, similarity, row))
 
         scored.sort(key=lambda x: x[0], reverse=True)
 
+        top = scored[:k]
+        now_iso = now.isoformat()
+
+        # Update last_used_at for returned programs
+        with self._conn() as conn:
+            for _, _, row in top:
+                conn.execute(
+                    "UPDATE programs SET last_used_at = ? WHERE id = ?",
+                    (now_iso, row[0]),
+                )
+
         results: list[StoredProgram] = []
-        for similarity, row in scored[:k]:
+        for adjusted, similarity, row in top:
             results.append(StoredProgram(
                 id=row[0],
                 goal_text=row[1],
@@ -193,6 +231,7 @@ class ProgramMemory:
                 execution_log=json.loads(row[5]) if row[5] else [],
                 created_at=row[6],
                 similarity=similarity,
+                last_used_at=now_iso,
             ))
         return results
 
@@ -220,7 +259,7 @@ class ProgramMemory:
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT id, goal_text, goal_embedding, shaun_program, "
-                "outcome, execution_log, created_at FROM programs "
+                "outcome, execution_log, created_at, last_used_at FROM programs "
                 "ORDER BY created_at DESC LIMIT ?",
                 (n,),
             ).fetchall()
@@ -230,6 +269,7 @@ class ProgramMemory:
                 outcome=r[4],
                 execution_log=json.loads(r[5]) if r[5] else [],
                 created_at=r[6],
+                last_used_at=r[7],
             )
             for r in rows
         ]
