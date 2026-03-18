@@ -401,10 +401,12 @@ class TestPraxisAgentLoop:
         with patch("praxis.agent.core.anthropic") as mock_anthropic:
             mock_anthropic.Anthropic.return_value = mock_client
             from praxis.agent.core import PraxisAgent
+            from praxis.agent.router import ModelRouter
             agent = PraxisAgent.__new__(PraxisAgent)
             agent._client = mock_client
             agent.model = "claude-sonnet-4-6"
             agent.max_tokens = 2048
+            agent._router = ModelRouter()
             return agent
 
     def test_simple_text_reply(self):
@@ -419,10 +421,12 @@ class TestPraxisAgentLoop:
         mock_client.messages.create.return_value = response
 
         with patch("praxis.agent.core.anthropic"):
+            from praxis.agent.router import ModelRouter
             agent = PraxisAgent.__new__(PraxisAgent)
             agent._client = mock_client
             agent.model = "claude-sonnet-4-6"
             agent.max_tokens = 2048
+            agent._router = ModelRouter()
 
         ctx = _make_ctx()
         reply = agent.chat("hi", ctx)
@@ -455,10 +459,12 @@ class TestPraxisAgentLoop:
 
         with patch("praxis.agent.core.anthropic"), \
              patch("praxis.agent.core.execute_tool", return_value='{"valid": true}'):
+            from praxis.agent.router import ModelRouter
             agent = PraxisAgent.__new__(PraxisAgent)
             agent._client = mock_client
             agent.model = "claude-sonnet-4-6"
             agent.max_tokens = 2048
+            agent._router = ModelRouter()
 
         ctx = _make_ctx()
         reply = agent.chat("validate LOG.msg", ctx)
@@ -483,10 +489,12 @@ class TestPraxisAgentLoop:
 
         with patch("praxis.agent.core.anthropic"), \
              patch("praxis.agent.core.execute_tool", return_value='{"schedules": []}'):
+            from praxis.agent.router import ModelRouter
             agent = PraxisAgent.__new__(PraxisAgent)
             agent._client = mock_client
             agent.model = "claude-sonnet-4-6"
             agent.max_tokens = 2048
+            agent._router = ModelRouter()
 
         ctx = _make_ctx()
         reply = agent.chat("loop forever", ctx)
