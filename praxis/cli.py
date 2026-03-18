@@ -429,7 +429,7 @@ def serve_cmd(host: str, port: int, open_browser: bool):
     """Start the Praxis web dashboard at http://localhost:7822"""
     url = f"http://{host}:{port}"
     console.print(f"\n[bold cyan]Praxis Dashboard[/]  {url}")
-    console.print("[dim]  Tabs: Dashboard · Programs · Logs · Constitution · Editor[/]")
+    console.print("[dim]  Tabs: Dashboard · Programs · Logs · Constitution · Schedules · Webhooks · Activity · Audit · Editor[/]")
     console.print("[dim]  Press Ctrl+C to stop.\n[/]")
 
     if open_browser:
@@ -446,6 +446,106 @@ def serve_cmd(host: str, port: int, open_browser: bool):
         console.print(f"[bold red]Missing dependency:[/] {exc}")
         console.print("[dim]Install with: pip install praxis-lang[bridge][/]")
         sys.exit(1)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# praxis search / install / publish  (Sprint 30 — program registry)
+# ──────────────────────────────────────────────────────────────────────────────
+
+@main.command("search")
+@click.argument("query", required=False, default="")
+@click.option("--registry", default=None, help="Registry index URL (overrides PRAXIS_REGISTRY_URL)")
+def search_cmd(query: str, registry: str | None):
+    """Search the Praxis program registry."""
+    from praxis.registry import search_registry, RegistryError, REGISTRY_URL
+    url = registry or REGISTRY_URL
+    try:
+        programs = search_registry(query, registry_url=url)
+    except RegistryError as e:
+        console.print(f"[red]Registry error:[/] {e}")
+        sys.exit(1)
+
+    if not programs:
+        console.print("[yellow]No programs found.[/]")
+        return
+
+    table = Table(box=box.SIMPLE, show_header=True, header_style="bold cyan")
+    table.add_column("Name", style="bold")
+    table.add_column("Description")
+    table.add_column("Tags", style="dim")
+    table.add_column("Author", style="dim")
+    for p in programs:
+        table.add_row(p.name, p.description, ", ".join(p.tags), p.author)
+    console.print(table)
+    console.print(f"\n[dim]{len(programs)} program(s) found. Install with: praxis install <name>[/]")
+
+
+@main.command("install")
+@click.argument("name")
+@click.option("--db", default=None, help="Path to program memory SQLite file")
+@click.option("--registry", default=None, help="Registry index URL")
+def install_cmd(name: str, db: str | None, registry: str | None):
+    """Install a program from the Praxis registry into your program memory."""
+    from praxis.registry import install_program, RegistryError, REGISTRY_URL
+    from praxis.memory import ProgramMemory
+
+    url = registry or REGISTRY_URL
+    memory = ProgramMemory(db_path=db) if db else ProgramMemory()
+
+    console.print(f"[cyan]Fetching '{name}' from registry…[/]")
+    try:
+        prog = install_program(name, memory=memory, registry_url=url)
+    except RegistryError as e:
+        console.print(f"[red]Install failed:[/] {e}")
+        sys.exit(1)
+
+    console.print(f"[green]✓[/] Installed [bold]{prog.name}[/] v{prog.version}")
+    console.print(f"  [dim]{prog.description}[/]")
+    console.print(f"  [dim]Now available in memory — run with: praxis goal \"{prog.description}\"[/]")
+
+
+@main.command("publish")
+@click.argument("filepath", type=click.Path(exists=True))
+@click.option("--name", required=True, help="Registry name for this program (e.g. news-brief)")
+@click.option("--description", required=True, help="One-line description")
+@click.option("--tags", default="", help="Comma-separated tags")
+@click.option("--author", default="", help="Your GitHub username")
+@click.option("--out", "outdir", default=".", help="Output directory for packaged files")
+def publish_cmd(
+    filepath: str,
+    name: str,
+    description: str,
+    tags: str,
+    author: str,
+    outdir: str,
+):
+    """Package a program for submission to the Praxis registry."""
+    from praxis.registry import publish_program
+    from praxis.grammar import parse
+
+    program_text = Path(filepath).read_text(encoding="utf-8")
+
+    # Validate it parses
+    try:
+        parse(program_text)
+    except Exception as exc:
+        console.print(f"[red]Parse error:[/] {exc}")
+        sys.exit(1)
+
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+    out_path = Path(outdir) / f"{name}.px"
+    metadata = publish_program(
+        program_text=program_text,
+        name=name,
+        description=description,
+        tags=tag_list,
+        author=author,
+        output_path=out_path,
+    )
+
+    console.print(f"[green]✓[/] Packaged as [bold]{out_path}[/]")
+    console.print(f"  Metadata: {out_path.with_suffix('.json')}")
+    console.print(f"\n[dim]To publish, open a PR to github.com/cssmith615/praxis adding your entry to registry/index.json[/]")
 
 
 # ──────────────────────────────────────────────────────────────────────────────

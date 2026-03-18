@@ -402,9 +402,88 @@ async def trigger_webhook(webhook_id: str, request: Request) -> dict:
         executor = Executor(handlers=HANDLERS)
         results = executor.execute(ast, initial_variables={"event": payload})
         _append_activity("webhook", f"Webhook '{name}' triggered", {"id": webhook_id, "steps": len(results)})
+        _audit_run(program_text, results, label=f"webhook '{name}'")
         return {"ok": True, "steps": len(results), "webhook": name}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# API — constitutional audit
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _audit_run(program_text: str, results: list, label: str = "run") -> dict:
+    """
+    Generate a constitutional audit record for a completed program run.
+
+    Extracts the verbs used, finds applicable constitutional rules, checks for
+    violations, and returns a plain-English summary. Also appends to the
+    activity log as type="audit".
+    """
+    # Extract verbs from execution results (more accurate than parsing text)
+    verbs_used: set[str] = {r["verb"] for r in results if isinstance(r, dict) and r.get("verb")}
+
+    # Get applicable rules from constitution
+    try:
+        const = _get_constitution()
+        applicable_rules = const.get_rules_for_verbs(verbs_used)
+    except Exception:
+        applicable_rules = []
+
+    # Detect violations (error steps, excluding SKIP)
+    violations = [
+        f"{r.get('verb', '?')}.{'.'.join(r.get('target', []))}: {r.get('log_entry', '')[:80]}"
+        for r in results
+        if isinstance(r, dict) and r.get("status") == "error"
+    ]
+
+    rule_count  = len(applicable_rules)
+    verb_list   = ", ".join(sorted(verbs_used)) if verbs_used else "none"
+    viol_count  = len(violations)
+
+    if viol_count == 0:
+        summary = (
+            f"{label.capitalize()} complete. Verbs used: {verb_list}. "
+            f"{rule_count} constitutional rule{'s' if rule_count != 1 else ''} checked. "
+            f"All rules passed."
+        )
+    else:
+        summary = (
+            f"{label.capitalize()} complete with {viol_count} violation{'s' if viol_count != 1 else ''}. "
+            f"Verbs used: {verb_list}. {rule_count} rules checked."
+        )
+
+    record = {
+        "verbs": sorted(verbs_used),
+        "rules_checked": rule_count,
+        "rules": applicable_rules,
+        "violations": violations,
+        "summary": summary,
+    }
+    _append_activity("audit", summary, record)
+    return record
+
+
+@app.get("/api/audit")
+def get_audit(limit: int = 50) -> dict:
+    """Return recent constitutional audit records from the activity log."""
+    if not _ACTIVITY_LOG.exists():
+        return {"audits": []}
+    lines = _ACTIVITY_LOG.read_text(encoding="utf-8").splitlines()
+    audits = []
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if entry.get("type") == "audit":
+            audits.append(entry)
+        if len(audits) >= limit:
+            break
+    return {"audits": audits}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -468,6 +547,7 @@ def run_program(req: RunRequest) -> dict:
         executor = Executor(handlers=HANDLERS, mode=req.mode)
         results  = executor.execute(ast)
         _append_activity("run", f"Program run via Editor ({len(results)} steps)", {"ok": True})
+        _audit_run(req.program, results, label="editor run")
         return {"ok": True, "error": None, "steps": results}
     except Exception as exc:
         return {"ok": False, "error": str(exc), "steps": []}
@@ -630,6 +710,7 @@ _HTML = """<!DOCTYPE html>
   <span id="tab-schedules" class="tab" onclick="showTab('schedules')">Schedules</span>
   <span id="tab-webhooks"  class="tab" onclick="showTab('webhooks')">Webhooks</span>
   <span id="tab-activity"  class="tab" onclick="showTab('activity')">Activity</span>
+  <span id="tab-audit"     class="tab" onclick="showTab('audit')">Audit</span>
   <span id="tab-editor"    class="tab" onclick="showTab('editor')">Editor</span>
   <div class="spacer"></div>
   <span class="provider-badge" id="provider-badge">—</span>
@@ -741,6 +822,19 @@ _HTML = """<!DOCTYPE html>
   </div>
 </div>
 
+<!-- ── AUDIT ── -->
+<div id="page-audit" class="page">
+  <div class="toolbar">
+    <span class="section-title" style="margin:0">Constitutional Audit</span>
+    <div class="spacer"></div>
+    <button class="btn secondary" onclick="loadAudit()">↻ Refresh</button>
+  </div>
+  <p style="color:var(--muted);font-size:13px;margin-bottom:20px">Every program run is checked against your constitutional rules. This log proves which rules applied and whether any were violated.</p>
+  <div id="audit-feed" style="display:flex;flex-direction:column;gap:10px">
+    <div class="empty">Loading…</div>
+  </div>
+</div>
+
 <!-- ── ACTIVITY ── -->
 <div id="page-activity" class="page">
   <div class="toolbar">
@@ -808,6 +902,7 @@ function showTab(name) {
   if (name === 'schedules') loadSchedules();
   if (name === 'webhooks') loadWebhooks();
   if (name === 'activity') loadActivity();
+  if (name === 'audit') loadAudit();
 }
 
 // ── stats ─────────────────────────────────────────────────────────────────
@@ -1069,6 +1164,46 @@ async function deleteWebhook(id) {
   if (!confirm('Delete webhook ' + id + '?')) return;
   await fetch('/api/webhooks/' + id, { method: 'DELETE' });
   loadWebhooks();
+}
+
+// ── audit ──────────────────────────────────────────────────────────────────
+async function loadAudit() {
+  const r = await fetch('/api/audit?limit=30');
+  const d = await r.json();
+  const feed = document.getElementById('audit-feed');
+  if (!d.audits || !d.audits.length) {
+    feed.innerHTML = '<div class="empty">No audit records yet. Run a program via the Editor, trigger a webhook, or let a schedule fire.</div>';
+    return;
+  }
+  feed.innerHTML = d.audits.map(a => {
+    const ts = a.ts ? new Date(a.ts * 1000).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
+    const det = a.detail || {};
+    const violations = det.violations || [];
+    const rules = det.rules || [];
+    const verbs = (det.verbs || []).join(', ') || '—';
+    const passed = violations.length === 0;
+    const borderColor = passed ? 'var(--green)' : 'var(--red)';
+    const badge = passed
+      ? '<span class="badge ok">all rules passed</span>'
+      : `<span class="badge error">${violations.length} violation${violations.length > 1 ? 's' : ''}</span>`;
+    const ruleItems = rules.length
+      ? `<div style="margin-top:8px"><div style="font-size:11px;color:var(--muted);margin-bottom:4px">RULES APPLIED</div>${rules.map(r => `<div style="font-size:12px;color:var(--text);padding:2px 0;border-left:2px solid var(--border);padding-left:8px;margin-bottom:3px">${esc(r)}</div>`).join('')}</div>`
+      : '<div style="font-size:12px;color:var(--muted);margin-top:6px">No rules matched these verbs.</div>';
+    const violItems = violations.length
+      ? `<div style="margin-top:8px"><div style="font-size:11px;color:var(--red);margin-bottom:4px">VIOLATIONS</div>${violations.map(v => `<div style="font-size:12px;color:#fca5a5;padding-left:8px">${esc(v)}</div>`).join('')}</div>`
+      : '';
+    return `<div style="background:var(--surface);border:1px solid ${borderColor};border-left:3px solid ${borderColor};border-radius:8px;padding:14px 16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div style="font-size:13px">${esc(det.summary || a.summary || '')}</div>
+        <div style="display:flex;gap:8px;align-items:center">
+          ${badge}
+          <span class="mono" style="font-size:11px;color:var(--muted)">${ts}</span>
+        </div>
+      </div>
+      <div style="font-size:12px;color:var(--muted)">Verbs: <span class="mono" style="color:var(--accent)">${esc(verbs)}</span> · ${det.rules_checked || 0} rule${det.rules_checked !== 1 ? 's' : ''} checked</div>
+      ${ruleItems}${violItems}
+    </div>`;
+  }).join('');
 }
 
 // ── activity ───────────────────────────────────────────────────────────────
