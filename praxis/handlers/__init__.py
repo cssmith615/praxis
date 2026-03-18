@@ -10,6 +10,7 @@ in Sprint 4.
 
 Verbs handled internally by the Executor (not dispatched here):
   SET   — captured by executor._exec_verb; no registry entry needed
+  LOAD  — captured by executor._exec_verb; no registry entry needed
   CALL  — executor resolves PLAN declarations directly
   SKIP  — executor returns skipped result; no handler needed
   BREAK — raises BreakSignal internally
@@ -19,7 +20,22 @@ Verbs handled internally by the Executor (not dispatched here):
   PAR   — executor fans out to ThreadPoolExecutor natively
   GOAL  — declaration, not executed
   PLAN  — declaration, not executed
+
+Plugin handlers (Sprint 28):
+  Place .py files in ~/.praxis/handlers/ to add custom verbs.
+  Each file must define:
+    VERB_NAME: str          — the verb this handler implements (e.g. "OUT_INSTAGRAM")
+    def handle(target, params, ctx) -> Any
+  Files are auto-loaded at import time. Load failures are logged and skipped.
+  Plugins run with full Python access — only install plugins you trust.
 """
+
+import importlib.util
+import logging
+import sys
+from pathlib import Path
+
+_plugin_log = logging.getLogger(__name__)
 
 from praxis.handlers.data import (
     ing_handler, cln_handler, xfrm_handler,
@@ -104,3 +120,35 @@ HANDLERS: dict = {
     "ANNOTATE": annotate_handler,
     "ROUTE":    route_handler,
 }
+
+
+def _load_plugins() -> None:
+    """Auto-load plugin handlers from ~/.praxis/handlers/*.py."""
+    plugin_dir = Path.home() / ".praxis" / "handlers"
+    if not plugin_dir.exists():
+        return
+    for plugin_path in sorted(plugin_dir.glob("*.py")):
+        try:
+            spec = importlib.util.spec_from_file_location(
+                f"praxis_plugin_{plugin_path.stem}", plugin_path
+            )
+            if spec is None or spec.loader is None:
+                continue
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = module
+            spec.loader.exec_module(module)
+            verb_name = getattr(module, "VERB_NAME", None)
+            handler_fn = getattr(module, "handle", None)
+            if not verb_name or not callable(handler_fn):
+                _plugin_log.warning(
+                    "Plugin %s skipped: must define VERB_NAME (str) and handle(target, params, ctx)",
+                    plugin_path.name,
+                )
+                continue
+            HANDLERS[str(verb_name).upper()] = handler_fn
+            _plugin_log.info("Loaded plugin handler: %s → %s", plugin_path.name, verb_name)
+        except Exception as exc:
+            _plugin_log.warning("Failed to load plugin %s: %s", plugin_path.name, exc)
+
+
+_load_plugins()

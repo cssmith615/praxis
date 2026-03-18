@@ -36,7 +36,7 @@ VALID_VERBS: frozenset[str] = frozenset({
     # AI/ML
     "TRN", "INF", "EVAL", "SUMM", "CLASS", "GEN", "EMBED", "SEARCH",
     # I/O
-    "READ", "WRITE", "FETCH", "POST", "OUT", "STORE", "RECALL",
+    "READ", "WRITE", "FETCH", "POST", "OUT", "STORE", "RECALL", "LOAD",
     # Agents
     "SPAWN", "CALL", "MSG", "WAIT", "CAST", "JOIN", "SIGN", "CAP",
     # Deploy

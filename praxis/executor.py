@@ -15,6 +15,10 @@ Execution semantics:
   SKIP      — returns a skipped result immediately; no handler call
   WAIT      — stub for Sprint 1; returns an ok result with no output
 
+Persistent variables (Sprint 27):
+  SET.varname(persist=true)  — writes variable to ~/.praxis/kv.db for cross-run persistence
+  LOAD.varname               — reads from ~/.praxis/kv.db into ctx.variables[varname]
+
 Handler contract:
   def my_handler(target: list[str], params: dict, ctx: ExecutionContext) -> Any:
       ...
@@ -119,8 +123,46 @@ class UnregisteredVerbError(ShaunRuntimeError):
 # Verbs that are always allowed even when a CAP allow-list is active.
 # These are native executor constructs, not handler-dispatched operations.
 _CAP_NATIVE_VERBS: frozenset[str] = frozenset({
-    "SET", "CALL", "RETRY", "ROLLBACK", "CAP",
+    "SET", "LOAD", "CALL", "RETRY", "ROLLBACK", "CAP",
 })
+
+# ── Persistent KV helpers (SET persist=true / LOAD) ──────────────────────────
+_KV_DB_PATH = _Path.home() / ".praxis" / "kv.db"
+_KV_VAR_NS  = "praxis_var::"   # namespace prefix to avoid collisions
+
+
+def _kv_write(name: str, value: Any) -> None:
+    """Write a variable to the persistent KV store."""
+    _KV_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = _sqlite3.connect(str(_KV_DB_PATH))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)"
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO kv (key, value, updated_at) VALUES (?, ?, ?)",
+            (_KV_VAR_NS + name, _json.dumps(value), time.strftime("%Y-%m-%dT%H:%M:%SZ")),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _kv_read(name: str) -> Any:
+    """Read a variable from the persistent KV store. Returns None if not found."""
+    if not _KV_DB_PATH.exists():
+        return None
+    conn = _sqlite3.connect(str(_KV_DB_PATH))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)"
+        )
+        row = conn.execute(
+            "SELECT value FROM kv WHERE key = ?", (_KV_VAR_NS + name,)
+        ).fetchone()
+    finally:
+        conn.close()
+    return _json.loads(row[0]) if row else None
 
 
 class RetryExhausted(ShaunRuntimeError):
@@ -166,6 +208,7 @@ class Executor:
         max_step_ms: int | None = None,
         max_output_bytes: int | None = None,
         cap_allow: set[str] | None = None,
+        initial_variables: dict[str, Any] | None = None,
     ) -> list[ExecutionResult]:
         ctx = ExecutionContext(
             mode=self.mode,
@@ -177,6 +220,8 @@ class Executor:
         )
         if cap_allow is not None:
             ctx._cap_allow = set(cap_allow)
+        if initial_variables:
+            ctx.variables.update(initial_variables)
 
         # Register all PLAN declarations so CALL can find them
         for stmt in program.statements:
@@ -244,8 +289,22 @@ class Executor:
         if verb == "SET":
             var_name = action.target[0] if action.target else "_"
             ctx.set_var(var_name, ctx.last_output)
-            log = f"SET.{var_name} ← {ctx.last_output!r}"
-            r = _make_result("SET", action.target, {}, ctx.last_output, "ok", 0, log)
+            persist = str(action.params.get("persist", "")).lower() in ("true", "1", "yes")
+            if persist:
+                _kv_write(var_name, ctx.last_output)
+            log = f"SET.{var_name} ← {ctx.last_output!r}" + (" [persisted]" if persist else "")
+            r = _make_result("SET", action.target, action.params, ctx.last_output, "ok", 0, log)
+            ctx.log.append(r)
+            return r
+
+        # LOAD reads a persisted variable from kv.db into ctx.variables
+        if verb == "LOAD":
+            var_name = action.target[0] if action.target else "_"
+            value = _kv_read(var_name)
+            ctx.set_var(var_name, value)
+            ctx.last_output = value
+            log = f"LOAD.{var_name} → {value!r}"
+            r = _make_result("LOAD", action.target, {}, value, "ok", 0, log)
             ctx.log.append(r)
             return r
 

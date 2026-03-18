@@ -201,6 +201,90 @@ def _send_discord(msg: str, params: dict) -> dict:
     return {"ok": True, "channel": "discord", "chunks": len(chunks)}
 
 
+def _send_x(msg: str, params: dict) -> dict:
+    """OUT.x — Post a tweet via X API v2 (OAuth 1.0a).
+
+    Required env vars (or params):
+      X_API_KEY / x_api_key
+      X_API_SECRET / x_api_secret
+      X_ACCESS_TOKEN / x_access_token
+      X_ACCESS_TOKEN_SECRET / x_access_token_secret
+
+    Uses tweepy if available; falls back to manual OAuth 1.0a signing.
+    Message is truncated to 280 characters automatically.
+    """
+    text = msg[:280]
+
+    api_key    = params.get("x_api_key")    or os.environ.get("X_API_KEY", "")
+    api_secret = params.get("x_api_secret") or os.environ.get("X_API_SECRET", "")
+    access_tok = params.get("x_access_token") or os.environ.get("X_ACCESS_TOKEN", "")
+    access_sec = params.get("x_access_token_secret") or os.environ.get("X_ACCESS_TOKEN_SECRET", "")
+
+    if not all([api_key, api_secret, access_tok, access_sec]):
+        raise ValueError(
+            "OUT.x requires X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, X_ACCESS_TOKEN_SECRET"
+        )
+
+    try:
+        import tweepy  # type: ignore[import]
+        client = tweepy.Client(
+            consumer_key=api_key, consumer_secret=api_secret,
+            access_token=access_tok, access_token_secret=access_sec,
+        )
+        resp = client.create_tweet(text=text)
+        tweet_id = resp.data["id"] if resp.data else None
+        return {"posted": True, "tweet_id": tweet_id, "chars": len(text)}
+    except ImportError:
+        pass  # fall through to manual OAuth
+
+    # Manual OAuth 1.0a signing (stdlib only — no tweepy required)
+    import base64
+    import hashlib
+    import hmac
+    import uuid
+
+    url    = "https://api.twitter.com/2/tweets"
+    nonce  = uuid.uuid4().hex
+    ts     = str(int(time.time()))
+
+    params_oauth = {
+        "oauth_consumer_key":     api_key,
+        "oauth_nonce":            nonce,
+        "oauth_signature_method": "HMAC-SHA1",
+        "oauth_timestamp":        ts,
+        "oauth_token":            access_tok,
+        "oauth_version":          "1.0",
+    }
+
+    # Signature base string
+    def _pct(s: str) -> str:
+        return urllib.parse.quote(str(s), safe="")
+
+    param_str = "&".join(f"{_pct(k)}={_pct(v)}" for k, v in sorted(params_oauth.items()))
+    base_str  = f"POST&{_pct(url)}&{_pct(param_str)}"
+    sign_key  = f"{_pct(api_secret)}&{_pct(access_sec)}"
+    sig = base64.b64encode(
+        hmac.new(sign_key.encode(), base_str.encode(), hashlib.sha1).digest()
+    ).decode()
+
+    params_oauth["oauth_signature"] = sig
+    auth_header = "OAuth " + ", ".join(
+        f'{_pct(k)}="{_pct(v)}"' for k, v in sorted(params_oauth.items())
+    )
+
+    body    = json.dumps({"text": text}).encode()
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Authorization": auth_header, "Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=15) as r:
+        data = json.loads(r.read().decode())
+    tweet_id = data.get("data", {}).get("id")
+    return {"posted": True, "tweet_id": tweet_id, "chars": len(text)}
+
+
 def out_handler(target: list[str], params: dict, ctx) -> Any:
     """OUT — Send to a named channel.
 
@@ -208,6 +292,7 @@ def out_handler(target: list[str], params: dict, ctx) -> Any:
       OUT.telegram   — sends via Telegram Bot API (reads TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID)
       OUT.slack      — sends via Slack incoming webhook (reads SLACK_WEBHOOK_URL)
       OUT.discord    — sends via Discord incoming webhook (reads DISCORD_WEBHOOK_URL)
+      OUT.x          — posts a tweet via X API v2 (reads X_API_KEY etc.)
       OUT.console    — prints to stdout (default)
 
     Extend with register_out_channel() for custom channels.
@@ -228,6 +313,10 @@ def out_handler(target: list[str], params: dict, ctx) -> Any:
     if channel == "discord":
         result = _send_discord(msg, params)
         return {"channel": "discord", "msg": msg, **result}
+
+    if channel in ("x", "twitter"):
+        result = _send_x(msg, params)
+        return {"channel": "x", "msg": msg, **result}
 
     if channel in _OUT_CHANNELS:
         result = _OUT_CHANNELS[channel](msg, params)

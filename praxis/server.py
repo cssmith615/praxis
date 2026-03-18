@@ -35,7 +35,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
@@ -46,11 +46,13 @@ from praxis.handlers import HANDLERS
 from praxis.memory import ProgramMemory
 from praxis.constitution import Constitution
 
-_PRAXIS_DIR  = Path.home() / ".praxis"
-_LOG_PATH    = _PRAXIS_DIR / "execution.log"
-_KV_DB       = _PRAXIS_DIR / "kv.db"
-_MEM_DB      = _PRAXIS_DIR / "memory.db"
-_SCHEDULE_DB = _PRAXIS_DIR / "schedule.db"
+_PRAXIS_DIR   = Path.home() / ".praxis"
+_LOG_PATH     = _PRAXIS_DIR / "execution.log"
+_KV_DB        = _PRAXIS_DIR / "kv.db"
+_MEM_DB       = _PRAXIS_DIR / "memory.db"
+_SCHEDULE_DB  = _PRAXIS_DIR / "schedule.db"
+_WEBHOOK_DB   = _PRAXIS_DIR / "webhooks.db"
+_ACTIVITY_LOG = _PRAXIS_DIR / "activity.log"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Singletons
@@ -78,7 +80,7 @@ def _get_constitution() -> Constitution:
 # App
 # ─────────────────────────────────────────────────────────────────────────────
 
-app = FastAPI(title="Praxis Dashboard", version="0.6.0", docs_url="/api/docs")
+app = FastAPI(title="Praxis Dashboard", version="0.7.0", docs_url="/api/docs")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -299,6 +301,150 @@ def patch_schedule(schedule_id: str, req: PatchScheduleRequest) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# API — webhooks
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _get_webhook_conn() -> sqlite3.Connection:
+    _WEBHOOK_DB.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(_WEBHOOK_DB)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS webhooks (
+            id TEXT PRIMARY KEY,
+            name TEXT,
+            program_text TEXT,
+            created_at TEXT
+        )
+    """)
+    conn.commit()
+    return conn
+
+
+class RegisterWebhookRequest(BaseModel):
+    name: str
+    program_text: str
+
+
+@app.get("/api/webhooks")
+def list_webhooks() -> dict:
+    conn = _get_webhook_conn()
+    try:
+        rows = conn.execute("SELECT id, name, program_text, created_at FROM webhooks").fetchall()
+    finally:
+        conn.close()
+    return {"webhooks": [{"id": r[0], "name": r[1], "program": r[2], "created_at": r[3]} for r in rows]}
+
+
+@app.post("/api/webhooks")
+def register_webhook(req: RegisterWebhookRequest) -> dict:
+    import uuid, datetime
+    wid = str(uuid.uuid4())[:8]
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+    conn = _get_webhook_conn()
+    try:
+        conn.execute(
+            "INSERT INTO webhooks (id, name, program_text, created_at) VALUES (?, ?, ?, ?)",
+            (wid, req.name, req.program_text, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"id": wid, "name": req.name, "url": f"/webhook/{wid}"}
+
+
+@app.delete("/api/webhooks/{webhook_id}")
+def delete_webhook(webhook_id: str) -> dict:
+    conn = _get_webhook_conn()
+    try:
+        cur = conn.execute("DELETE FROM webhooks WHERE id = ?", (webhook_id,))
+        conn.commit()
+        deleted = cur.rowcount
+    finally:
+        conn.close()
+    if deleted == 0:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+    return {"deleted": deleted}
+
+
+@app.post("/webhook/{webhook_id}")
+async def trigger_webhook(webhook_id: str, request: Request) -> dict:
+    """Trigger a registered webhook program with the incoming payload."""
+    conn = _get_webhook_conn()
+    try:
+        row = conn.execute(
+            "SELECT name, program_text FROM webhooks WHERE id = ?", (webhook_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+
+    name, program_text = row
+    try:
+        body = await request.body()
+        try:
+            payload = json.loads(body) if body else {}
+        except json.JSONDecodeError:
+            payload = {"raw": body.decode(errors="replace")}
+    except Exception:
+        payload = {}
+
+    try:
+        from praxis.grammar import parse
+        from praxis.validator import validate
+        from praxis.executor import Executor
+        from praxis.handlers import HANDLERS
+
+        ast = parse(program_text)
+        errors = validate(ast)
+        if errors:
+            return {"ok": False, "error": "\n".join(errors)}
+
+        executor = Executor(handlers=HANDLERS)
+        results = executor.execute(ast, initial_variables={"event": payload})
+        _append_activity("webhook", f"Webhook '{name}' triggered", {"id": webhook_id, "steps": len(results)})
+        return {"ok": True, "steps": len(results), "webhook": name}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# API — activity feed
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _append_activity(event_type: str, summary: str, detail: dict | None = None) -> None:
+    """Append a plain-English activity event to the activity log."""
+    import time as _time
+    _ACTIVITY_LOG.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "type": event_type,
+        "summary": summary,
+        "detail": detail or {},
+        "ts": _time.time(),
+    }
+    with open(_ACTIVITY_LOG, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
+@app.get("/api/activity")
+def get_activity(limit: int = 50) -> dict:
+    if not _ACTIVITY_LOG.exists():
+        return {"events": []}
+    lines = _ACTIVITY_LOG.read_text(encoding="utf-8").splitlines()
+    events = []
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+        if len(events) >= limit:
+            break
+    return {"events": events}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # API — run
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -321,6 +467,7 @@ def run_program(req: RunRequest) -> dict:
     try:
         executor = Executor(handlers=HANDLERS, mode=req.mode)
         results  = executor.execute(ast)
+        _append_activity("run", f"Program run via Editor ({len(results)} steps)", {"ok": True})
         return {"ok": True, "error": None, "steps": results}
     except Exception as exc:
         return {"ok": False, "error": str(exc), "steps": []}
@@ -481,6 +628,8 @@ _HTML = """<!DOCTYPE html>
   <span id="tab-logs"      class="tab" onclick="showTab('logs')">Logs</span>
   <span id="tab-constitution" class="tab" onclick="showTab('constitution')">Constitution</span>
   <span id="tab-schedules" class="tab" onclick="showTab('schedules')">Schedules</span>
+  <span id="tab-webhooks"  class="tab" onclick="showTab('webhooks')">Webhooks</span>
+  <span id="tab-activity"  class="tab" onclick="showTab('activity')">Activity</span>
   <span id="tab-editor"    class="tab" onclick="showTab('editor')">Editor</span>
   <div class="spacer"></div>
   <span class="provider-badge" id="provider-badge">—</span>
@@ -567,6 +716,43 @@ _HTML = """<!DOCTYPE html>
   </table>
 </div>
 
+<!-- ── WEBHOOKS ── -->
+<div id="page-webhooks" class="page">
+  <div class="toolbar">
+    <span class="section-title" style="margin:0">Webhooks</span>
+    <span id="wh-count" style="color:var(--muted);font-size:13px;margin-left:8px"></span>
+    <div class="spacer"></div>
+    <button class="btn secondary" onclick="loadWebhooks()">↻ Refresh</button>
+  </div>
+  <table style="margin-bottom:28px">
+    <thead><tr><th>ID</th><th>Name</th><th>Trigger URL</th><th>Program</th><th></th></tr></thead>
+    <tbody id="webhooks-tbody"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+  </table>
+  <div class="section-title">Register Webhook</div>
+  <div class="add-rule-form">
+    <label>Name</label>
+    <input type="text" id="wh-name" placeholder="my-slack-bot" style="width:100%">
+    <label>Program (Praxis DSL)</label>
+    <textarea class="code" id="wh-program" style="height:120px;border:1px solid var(--border);border-radius:7px" placeholder="GEN.reply(input=$event.text) -> OUT.telegram(msg=$reply)"></textarea>
+    <div style="margin-top:14px">
+      <button class="btn" onclick="registerWebhook()">Register</button>
+      <span id="wh-msg" style="margin-left:12px;font-size:13px;color:var(--muted)"></span>
+    </div>
+  </div>
+</div>
+
+<!-- ── ACTIVITY ── -->
+<div id="page-activity" class="page">
+  <div class="toolbar">
+    <span class="section-title" style="margin:0">Activity Feed</span>
+    <div class="spacer"></div>
+    <button class="btn secondary" onclick="loadActivity()">↻ Refresh</button>
+  </div>
+  <div id="activity-feed" style="display:flex;flex-direction:column;gap:8px">
+    <div class="empty">Loading…</div>
+  </div>
+</div>
+
 <!-- ── EDITOR ── -->
 <div id="page-editor" class="page">
   <div class="toolbar">
@@ -620,6 +806,8 @@ function showTab(name) {
   if (name === 'logs') loadLogs();
   if (name === 'constitution') loadConstitution();
   if (name === 'schedules') loadSchedules();
+  if (name === 'webhooks') loadWebhooks();
+  if (name === 'activity') loadActivity();
 }
 
 // ── stats ─────────────────────────────────────────────────────────────────
@@ -834,6 +1022,79 @@ async function deleteSchedule(id) {
   if (!confirm('Delete schedule ' + id + '?')) return;
   await fetch('/api/schedules/' + id, { method: 'DELETE' });
   loadSchedules();
+}
+
+// ── webhooks ──────────────────────────────────────────────────────────────
+async function loadWebhooks() {
+  const r = await fetch('/api/webhooks');
+  const d = await r.json();
+  const hooks = d.webhooks || [];
+  document.getElementById('wh-count').textContent = hooks.length + ' registered';
+  const tbody = document.getElementById('webhooks-tbody');
+  if (!hooks.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">No webhooks. Register one below.</td></tr>';
+    return;
+  }
+  const origin = window.location.origin;
+  tbody.innerHTML = hooks.map(h => `
+    <tr>
+      <td class="mono" style="font-size:11px;color:var(--muted)">${esc(h.id)}</td>
+      <td>${esc(h.name)}</td>
+      <td class="mono" style="font-size:11px">
+        <a href="${origin}/webhook/${esc(h.id)}" style="color:var(--accent)" target="_blank">${origin}/webhook/${esc(h.id)}</a>
+      </td>
+      <td class="mono truncate" style="font-size:11px;color:var(--muted)">${esc((h.program||'').split('\\n')[0])}</td>
+      <td><button class="btn danger" style="padding:3px 10px;font-size:11px" onclick="deleteWebhook('${esc(h.id)}')">Delete</button></td>
+    </tr>`).join('');
+}
+
+async function registerWebhook() {
+  const name = document.getElementById('wh-name').value.trim();
+  const program = document.getElementById('wh-program').value.trim();
+  const msg = document.getElementById('wh-msg');
+  if (!name || !program) { msg.textContent = 'Name and program required.'; return; }
+  const r = await fetch('/api/webhooks', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ name, program_text: program })
+  });
+  const d = await r.json();
+  msg.style.color = 'var(--green)';
+  msg.textContent = `Registered. URL: ${window.location.origin}/webhook/${d.id}`;
+  document.getElementById('wh-name').value = '';
+  document.getElementById('wh-program').value = '';
+  loadWebhooks();
+}
+
+async function deleteWebhook(id) {
+  if (!confirm('Delete webhook ' + id + '?')) return;
+  await fetch('/api/webhooks/' + id, { method: 'DELETE' });
+  loadWebhooks();
+}
+
+// ── activity ───────────────────────────────────────────────────────────────
+const _TYPE_ICONS = { webhook: '⚡', schedule: '⏱', run: '▶', system: 'ℹ' };
+
+async function loadActivity() {
+  const r = await fetch('/api/activity?limit=50');
+  const d = await r.json();
+  const feed = document.getElementById('activity-feed');
+  if (!d.events || !d.events.length) {
+    feed.innerHTML = '<div class="empty">No activity yet. Run a program, trigger a webhook, or let a schedule fire.</div>';
+    return;
+  }
+  feed.innerHTML = d.events.map(e => {
+    const icon = _TYPE_ICONS[e.type] || '•';
+    const ts = e.ts ? new Date(e.ts * 1000).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
+    const detailStr = e.detail && Object.keys(e.detail).length ? JSON.stringify(e.detail) : '';
+    return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 16px;display:flex;gap:12px;align-items:flex-start">
+      <span style="font-size:16px;min-width:24px">${icon}</span>
+      <div style="flex:1">
+        <div style="font-size:13px">${esc(e.summary)}</div>
+        ${detailStr ? `<div class="mono" style="font-size:11px;color:var(--muted);margin-top:3px">${esc(detailStr.slice(0,120))}</div>` : ''}
+      </div>
+      <div class="mono" style="font-size:11px;color:var(--muted);white-space:nowrap">${ts}</div>
+    </div>`;
+  }).join('');
 }
 
 // ── editor ────────────────────────────────────────────────────────────────
