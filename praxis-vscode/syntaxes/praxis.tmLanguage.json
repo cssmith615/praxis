@@ -1,0 +1,79 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Praxis",
+  "scopeName": "source.praxis",
+  "fileTypes": ["px"],
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#keyword-control" },
+    { "include": "#chain-arrow" },
+    { "include": "#par-block" },
+    { "include": "#verb-step" },
+    { "include": "#variable-ref" },
+    { "include": "#param-key" },
+    { "include": "#string" },
+    { "include": "#number" },
+    { "include": "#operator" }
+  ],
+  "repository": {
+    "comment": {
+      "name": "comment.line.number-sign.praxis",
+      "match": "#.*$"
+    },
+    "keyword-control": {
+      "name": "keyword.control.praxis",
+      "match": "\\b(IF|THEN|ELSE|END|LOOP|BREAK|SKIP|WAIT|PAR|RETRY|ROLLBACK|SNAP|GATE|ASSERT|SPAWN|JOIN|MSG|CAST|SIGN|CAP|SET|CALL)\\b"
+    },
+    "chain-arrow": {
+      "name": "keyword.operator.chain.praxis",
+      "match": "->"
+    },
+    "par-block": {
+      "name": "keyword.control.par.praxis",
+      "match": "\\bPAR\\s*(?=\\()"
+    },
+    "verb-step": {
+      "comment": "VERB.target — verb name is entity.name.function, target is variable.other",
+      "match": "\\b([A-Z]{2,8})\\.([a-z][a-zA-Z0-9_]*(?:\\.[a-z][a-zA-Z0-9_]*)*)",
+      "captures": {
+        "1": { "name": "entity.name.function.verb.praxis" },
+        "2": { "name": "variable.other.target.praxis" }
+      }
+    },
+    "variable-ref": {
+      "name": "variable.other.praxis",
+      "match": "\\$[a-zA-Z_][a-zA-Z0-9_]*"
+    },
+    "param-key": {
+      "comment": "key= in parameter lists",
+      "match": "\\b([a-z][a-zA-Z0-9_]*)\\s*(?==)",
+      "captures": {
+        "1": { "name": "variable.parameter.praxis" }
+      }
+    },
+    "string": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.praxis",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [{ "name": "constant.character.escape.praxis", "match": "\\\\." }]
+        },
+        {
+          "name": "string.quoted.single.praxis",
+          "begin": "'",
+          "end": "'",
+          "patterns": [{ "name": "constant.character.escape.praxis", "match": "\\\\." }]
+        }
+      ]
+    },
+    "number": {
+      "name": "constant.numeric.praxis",
+      "match": "\\b[0-9]+(\\.[0-9]+)?\\b"
+    },
+    "operator": {
+      "name": "keyword.operator.praxis",
+      "match": "==|!=|<=|>=|<|>|="
+    }
+  }
+}

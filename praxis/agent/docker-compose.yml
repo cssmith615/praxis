@@ -1,0 +1,62 @@
+# Praxis Agent — Docker Compose
+#
+# Setup:
+#   1. Copy .env.example → .env and fill in your keys
+#   2. docker compose up -d
+#   3. docker compose logs -f praxis-agent
+#
+# The agent data (memory.db, schedule.db, execution.log) is persisted
+# in the named volume 'praxis_data' across restarts.
+
+version: "3.9"
+
+services:
+  praxis-agent:
+    build:
+      context: ../..
+      dockerfile: praxis/agent/Dockerfile
+    container_name: praxis-agent
+    restart: unless-stopped
+
+    environment:
+      # ── Required ────────────────────────────────────────────────
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+
+      # ── Recommended ─────────────────────────────────────────────
+      # Comma-separated list of allowed Telegram chat ids.
+      # Leave empty to allow any chat (not recommended in production).
+      TELEGRAM_CHAT_IDS: ${TELEGRAM_CHAT_IDS:-}
+
+      # Trigger word for group chats (e.g. "@praxis"). Optional.
+      AGENT_TRIGGER: ${AGENT_TRIGGER:-}
+
+      # ── Optional: LLM provider for goal planning ─────────────────
+      # If set, the agent can translate natural language → .px programs.
+      # OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+
+      # ── Agent configuration ──────────────────────────────────────
+      PRAXIS_MODE: ${PRAXIS_MODE:-prod}
+
+    command:
+      - --mode
+      - ${PRAXIS_MODE:-prod}
+      - --schedule
+      - --memory
+
+    volumes:
+      - praxis_data:/root/.praxis
+
+    # Expose the Praxis bridge port if you want external access
+    # ports:
+    #   - "7821:7821"
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  praxis_data:
+    name: praxis_data

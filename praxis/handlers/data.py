@@ -78,18 +78,108 @@ def cln_handler(target: list[str], params: dict, ctx) -> Any:
 
 
 def xfrm_handler(target: list[str], params: dict, ctx) -> Any:
-    """XFRM — Transform data. Stub: returns input unchanged."""
-    return ctx.last_output
+    """
+    XFRM — Transform data.
+
+    Strategies (first element of target):
+      slice(limit=N, offset=M)   — take N items starting at M (default 0)
+      pluck(field=name)          — extract a single field from each dict in a list
+      join(sep=", ")             — join a list of strings into one string
+      flatten                    — flatten a list of lists one level deep
+      keys                       — return the keys of the first dict in a list
+      values(field=name)         — alias for pluck
+      (anything else)            — passthrough
+    """
+    data = ctx.last_output
+    strategy = target[0] if target else "passthrough"
+
+    if strategy == "slice":
+        if not isinstance(data, list):
+            return data
+        limit = int(params.get("limit", len(data)))
+        offset = int(params.get("offset", 0))
+        return data[offset:offset + limit]
+
+    if strategy in ("pluck", "values"):
+        field = params.get("field", target[1] if len(target) > 1 else None)
+        if not field or not isinstance(data, list):
+            return data
+        return [item[field] for item in data if isinstance(item, dict) and field in item]
+
+    if strategy == "join":
+        sep = params.get("sep", "\n")
+        if isinstance(data, list):
+            return sep.join(str(item) for item in data)
+        return str(data) if data is not None else ""
+
+    if strategy == "flatten":
+        if isinstance(data, list):
+            result = []
+            for item in data:
+                if isinstance(item, list):
+                    result.extend(item)
+                else:
+                    result.append(item)
+            return result
+        return data
+
+    if strategy == "keys":
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            return list(data[0].keys())
+        if isinstance(data, dict):
+            return list(data.keys())
+        return data
+
+    # Passthrough for unknown strategies
+    return data
 
 
 def filter_handler(target: list[str], params: dict, ctx) -> Any:
-    """FILTER — Filter rows. Stub: returns input unchanged."""
-    return ctx.last_output
+    """
+    FILTER — Filter rows.
+
+    Strategies:
+      field(name=x, value=y)     — keep rows where row[name] == value
+      field(name=x, gt=y)        — keep rows where row[name] > y
+      field(name=x, lt=y)        — keep rows where row[name] < y
+      (anything else)            — passthrough
+    """
+    data = ctx.last_output
+    if not isinstance(data, list):
+        return data
+
+    strategy = target[0] if target else "passthrough"
+
+    if strategy == "field":
+        name = params.get("name", target[1] if len(target) > 1 else None)
+        if not name:
+            return data
+        if "value" in params:
+            val = params["value"]
+            return [row for row in data if isinstance(row, dict) and str(row.get(name)) == str(val)]
+        if "gt" in params:
+            threshold = float(params["gt"])
+            return [row for row in data if isinstance(row, dict) and float(row.get(name, 0)) > threshold]
+        if "lt" in params:
+            threshold = float(params["lt"])
+            return [row for row in data if isinstance(row, dict) and float(row.get(name, 0)) < threshold]
+
+    return data
 
 
 def sort_handler(target: list[str], params: dict, ctx) -> Any:
-    """SORT — Sort data. Stub: returns input unchanged."""
-    return ctx.last_output
+    """SORT — Sort a list. Params: field=name, order=asc|desc."""
+    data = ctx.last_output
+    if not isinstance(data, list):
+        return data
+
+    field = params.get("field", target[0] if target else None)
+    reverse = params.get("order", "asc").lower() == "desc"
+
+    if field:
+        return sorted(data, key=lambda x: x.get(field, 0) if isinstance(x, dict) else x,
+                      reverse=reverse)
+    return sorted(data, reverse=reverse)
 
 
 def merge_handler(target: list[str], params: dict, ctx) -> Any:

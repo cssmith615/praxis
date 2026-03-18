@@ -1,0 +1,98 @@
+{
+  "name": "praxis-lang",
+  "displayName": "Praxis Language",
+  "description": "Syntax highlighting, validation, and autocomplete for Praxis .px workflow files",
+  "version": "0.1.0",
+  "publisher": "cssmith615",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Programming Languages", "Linters"],
+  "keywords": ["praxis", "px", "workflow", "ai", "dsl"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cssmith615/praxis"
+  },
+  "main": "./out/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "languages": [
+      {
+        "id": "praxis",
+        "aliases": ["Praxis", "praxis"],
+        "extensions": [".px"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "praxis",
+        "scopeName": "source.praxis",
+        "path": "./syntaxes/praxis.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "praxis.validate",
+        "title": "Praxis: Validate File"
+      },
+      {
+        "command": "praxis.run",
+        "title": "Praxis: Run File"
+      }
+    ],
+    "menus": {
+      "editor/title/run": [
+        {
+          "command": "praxis.run",
+          "when": "resourceExtname == .px",
+          "group": "navigation"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "praxis.validate",
+          "when": "resourceExtname == .px",
+          "group": "1_run"
+        },
+        {
+          "command": "praxis.run",
+          "when": "resourceExtname == .px",
+          "group": "1_run"
+        }
+      ]
+    },
+    "configuration": {
+      "type": "object",
+      "title": "Praxis",
+      "properties": {
+        "praxis.executablePath": {
+          "type": "string",
+          "default": "praxis",
+          "description": "Path to the praxis CLI executable (default: 'praxis' on PATH)"
+        },
+        "praxis.validateOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically validate .px files on save"
+        },
+        "praxis.mode": {
+          "type": "string",
+          "enum": ["dev", "prod"],
+          "default": "dev",
+          "description": "Execution mode passed to praxis validate/run"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0",
+    "@vscode/vsce": "^2.22.0"
+  }
+}

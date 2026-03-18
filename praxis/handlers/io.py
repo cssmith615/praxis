@@ -88,12 +88,29 @@ def write_handler(target: list[str], params: dict, ctx) -> Any:
 
 
 def fetch_handler(target: list[str], params: dict, ctx) -> Any:
-    """FETCH — HTTP GET. Returns parsed JSON dict or raw text string."""
+    """FETCH — HTTP GET. Returns parsed JSON dict or raw text string.
+
+    Fan-out mode: if the URL template contains '$item' and ctx.last_output is a
+    list, FETCH substitutes each item into the URL and returns a list of responses.
+    """
     if not _HTTPX:
         raise ImportError("FETCH requires httpx: pip install praxis-lang[bridge]")
-    url = params.get("url", ".".join(target))
+    url_template = params.get("url") or params.get("src") or ".".join(target)
     headers = params.get("headers", {})
     timeout = float(params.get("timeout", 10))
+
+    # Fan-out: iterate when template has $item and last output is a list
+    if "$item" in url_template and isinstance(ctx.last_output, list):
+        results = []
+        for item in ctx.last_output:
+            url = url_template.replace("$item", str(item))
+            resp = httpx.get(url, headers=headers, timeout=timeout, follow_redirects=True)
+            resp.raise_for_status()
+            ct = resp.headers.get("content-type", "")
+            results.append(resp.json() if "application/json" in ct else resp.text)
+        return results
+
+    url = url_template
     response = httpx.get(url, headers=headers, timeout=timeout, follow_redirects=True)
     response.raise_for_status()
     content_type = response.headers.get("content-type", "")
@@ -106,7 +123,7 @@ def post_handler(target: list[str], params: dict, ctx) -> Any:
     """POST — HTTP POST with JSON or text body."""
     if not _HTTPX:
         raise ImportError("POST requires httpx: pip install praxis-lang[bridge]")
-    url = params.get("url", ".".join(target))
+    url = params.get("url") or params.get("src") or ".".join(target)
     body = params.get("body", ctx.last_output)
     headers = params.get("headers", {})
     timeout = float(params.get("timeout", 10))

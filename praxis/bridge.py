@@ -2,11 +2,19 @@
 Praxis Bridge — FastAPI sidecar for NanoClaw integration.
 
 Endpoints:
-  GET  /health            — liveness probe
-  POST /plan              — goal → Praxis program  (via Planner)
-  POST /execute           — Praxis program → list[ExecutionResult]
-  POST /memory/store      — persist a program to ProgramMemory
-  POST /memory/retrieve   — fetch similar programs by cosine KNN
+  GET  /health                        — liveness probe
+  POST /plan                          — goal → Praxis program  (via Planner)
+  POST /execute                       — Praxis program → list[ExecutionResult]
+  POST /memory/store                  — persist a program to ProgramMemory
+  POST /memory/retrieve               — fetch similar programs by cosine KNN
+
+Distributed worker hub endpoints:
+  POST   /workers/register            — remote worker announces itself
+  GET    /workers                     — list all registered workers
+  GET    /workers/{agent_id}          — get one worker
+  POST   /workers/{agent_id}/heartbeat — worker keeps its registration alive
+  DELETE /workers/{agent_id}          — deregister a worker
+  POST   /workers/dispatch/{agent_id} — hub proxies program to worker /execute
 
 Start:
   python -m praxis.bridge                         # default port 7821
@@ -29,6 +37,7 @@ from praxis.handlers import HANDLERS
 from praxis.memory import ProgramMemory
 from praxis.constitution import Constitution
 from praxis.planner import Planner, PlanningFailure
+from praxis.distributed import RemoteWorkerHub
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared singletons (lazy — sentence-transformers loads on first /plan call)
@@ -36,6 +45,7 @@ from praxis.planner import Planner, PlanningFailure
 
 _memory: ProgramMemory | None = None
 _planner: Planner | None = None
+_worker_hub = RemoteWorkerHub()
 
 
 def _get_memory() -> ProgramMemory:
@@ -232,6 +242,81 @@ def memory_retrieve(req: MemoryRetrieveRequest) -> MemoryRetrieveResponse:
         )
     except Exception as exc:
         return MemoryRetrieveResponse(ok=False, error=str(exc))
+
+
+# ── /workers — distributed worker hub ────────────────────────────────────────
+
+class WorkerRegisterRequest(BaseModel):
+    agent_id: str
+    role: str
+    verbs: list[str]
+    url: str
+
+
+class WorkerRegisterResponse(BaseModel):
+    ok: bool
+    agent_id: str | None = None
+    error: str | None = None
+
+
+class WorkerEntry(BaseModel):
+    agent_id: str
+    role: str
+    verbs: list[str]
+    url: str
+    registered_at: str
+    last_seen: str
+    stale: bool
+
+
+class WorkerDispatchRequest(BaseModel):
+    program: str
+    mode: str = "dev"
+
+
+@app.post("/workers/register", response_model=WorkerRegisterResponse)
+def workers_register(req: WorkerRegisterRequest) -> WorkerRegisterResponse:
+    try:
+        reg = _worker_hub.register(
+            agent_id=req.agent_id,
+            role=req.role,
+            verbs=req.verbs,
+            url=req.url,
+        )
+        return WorkerRegisterResponse(ok=True, agent_id=reg.agent_id)
+    except Exception as exc:
+        return WorkerRegisterResponse(ok=False, error=str(exc))
+
+
+@app.get("/workers", response_model=list[WorkerEntry])
+def workers_list() -> list[WorkerEntry]:
+    return [WorkerEntry(**r.to_dict()) for r in _worker_hub.list_all()]
+
+
+@app.get("/workers/{agent_id}", response_model=WorkerEntry)
+def workers_get(agent_id: str):
+    reg = _worker_hub.get(agent_id)
+    if reg is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"Worker '{agent_id}' not found")
+    return WorkerEntry(**reg.to_dict())
+
+
+@app.post("/workers/{agent_id}/heartbeat")
+def workers_heartbeat(agent_id: str) -> dict:
+    ok = _worker_hub.heartbeat(agent_id)
+    return {"ok": ok, "agent_id": agent_id}
+
+
+@app.delete("/workers/{agent_id}")
+def workers_deregister(agent_id: str) -> dict:
+    ok = _worker_hub.deregister(agent_id)
+    return {"ok": ok, "agent_id": agent_id}
+
+
+@app.post("/workers/dispatch/{agent_id}")
+def workers_dispatch(agent_id: str, req: WorkerDispatchRequest) -> dict:
+    return _worker_hub.dispatch(agent_id=agent_id, program=req.program, mode=req.mode)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

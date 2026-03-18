@@ -116,7 +116,16 @@ praxis validate hello.px        # grammar + semantic check
 praxis parse hello.px           # print the AST as JSON
 ```
 
-### 3. Generate a program from a goal (requires API key)
+### 3. Start the interactive REPL
+
+```bash
+praxis chat                    # program mode — type .px directly
+praxis chat --provider anthropic  # enables natural-language goal mode
+```
+
+Type `.px` programs or natural-language goals.  Session commands: `:run`, `:validate`, `:save <file>`, `:history`, `:mode`, `:help`, `:quit`.
+
+### 4. Generate a program from a goal (requires API key)
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
@@ -125,13 +134,13 @@ praxis goal "fetch the top 5 HN stories and summarize them"
 
 Praxis plans, validates, executes, and stores the program. Next time you run a similar goal it retrieves and adapts the stored version instead of generating from scratch.
 
-### 4. Browse your program library
+### 5. Browse your program library
 
 ```bash
 praxis memory
 ```
 
-### 5. Start the REST bridge (for integration with other platforms)
+### 6. Start the REST bridge (for integration with other platforms)
 
 ```bash
 python -m praxis.bridge         # starts on http://127.0.0.1:7821
@@ -187,6 +196,52 @@ IF.$summary != "" ->
   OUT.notion(page=weekly_report, content=$summary)
 ELSE ->
   OUT.slack(channel=alerts, msg="Weekly report failed — no data")
+```
+
+### FETCH fan-out
+
+When a URL template contains `$item` and the previous step returned a list, `FETCH` automatically iterates over each item, substitutes it into the URL, and returns a list of responses. This is how you turn a list of IDs into a list of full objects in a single chain step.
+
+**Live example — top 5 Hacker News stories:**
+
+```
+FETCH.data(src="https://hacker-news.firebaseio.com/v0/topstories.json") ->
+XFRM.slice(limit=5) ->
+FETCH.data(src="https://hacker-news.firebaseio.com/v0/item/$item.json") ->
+XFRM.pluck(field=title) ->
+XFRM.join(sep="\n") ->
+LOG.msg
+```
+
+```
+Step 1  FETCH.data   ok  160ms  fetched ID list (500 items)
+Step 2  XFRM.slice   ok    0ms  trimmed to first 5 IDs
+Step 3  FETCH.data   ok  669ms  fetched each item by $item ID (5 requests)
+Step 4  XFRM.pluck   ok    0ms  extracted title field from each object
+Step 5  XFRM.join    ok    0ms  joined with \n separator
+Step 6  LOG.msg      ok    2ms  emitted final output
+```
+
+No loops, no SET, no manual iteration. `$item` does it.
+
+### XFRM sub-targets
+
+`XFRM` operates on the previous step's output in-place and passes the result to the next step:
+
+| Target | Parameters | What it does |
+|--------|------------|--------------|
+| `XFRM.slice` | `limit`, `offset` | Trim a list to the first N items |
+| `XFRM.pluck` | `field` | Extract one field from each object in a list |
+| `XFRM.join` | `sep` | Join a list of strings into one string |
+| `XFRM.flatten` | — | Flatten a nested list one level |
+| `XFRM.keys` | — | Return the keys of a dict |
+
+`FILTER` and `SORT` work similarly:
+
+```
+FILTER.field(name=status, value=active)      # keep items where status == active
+FILTER.field(name=score, gt=100)             # keep items where score > 100
+SORT.field(field=score, order=desc)          # sort list by field descending
 ```
 
 ### The 51 Verbs
@@ -274,6 +329,12 @@ PRAXIS_BRIDGE_PORT=8000 python -m praxis.bridge
 | `POST` | `/execute` | `{program, mode}` → step results |
 | `POST` | `/memory/store` | `{goal, program, outcome}` → persist |
 | `POST` | `/memory/retrieve` | `{goal, k}` → similar programs |
+| `POST` | `/workers/register` | `{agent_id, role, verbs, url}` → register remote worker |
+| `GET` | `/workers` | List all registered workers (includes stale flag) |
+| `GET` | `/workers/{id}` | Get one worker |
+| `POST` | `/workers/{id}/heartbeat` | Keep worker registration alive |
+| `DELETE` | `/workers/{id}` | Deregister worker |
+| `POST` | `/workers/dispatch/{id}` | Hub proxies `{program, mode}` to worker `/execute` |
 
 ### TypeScript / JavaScript example
 
@@ -441,6 +502,128 @@ See `examples/swarm_analysis.px` for the full reference program.
 
 ---
 
+## Distributed Workers
+
+v1.1 extends `SPAWN` to span separate machines. Add a `url=` param pointing at any running Praxis bridge and that worker executes over HTTP — `MSG`, `CAST`, and `JOIN` work identically whether the worker is local or remote.
+
+```
+# On machine A — start a data worker
+praxis worker --port 7823 --hub http://hub:7821 --role data --verbs ING,CLN,XFRM
+
+# On machine B — start an analysis worker
+praxis worker --port 7824 --hub http://hub:7821 --role analysis --verbs SUMM,EVAL,GEN
+
+# In your coordinator program
+SPAWN.data(role=data, verbs=[ING,CLN], url=http://machineA:7823) ->
+SPAWN.analysis(role=analysis, verbs=[SUMM,EVAL], url=http://machineB:7824) ->
+PAR(
+  MSG.data(program="ING.sales.db -> CLN.null -> XFRM.normalize"),
+  MSG.analysis(program="SUMM.text(max=300) -> EVAL.sentiment")
+) ->
+JOIN(timeout=60) -> MERGE -> OUT.telegram
+```
+
+Workers register with the hub on startup, send heartbeats every 30 seconds, and deregister cleanly on exit. Workers that miss heartbeats for 120 seconds are automatically marked stale and skipped by routing.
+
+```python
+from praxis.distributed import WorkerClient
+
+client = WorkerClient("http://hub:7821")
+workers = client.discover()            # all non-stale workers
+worker  = client.discover(role="data") # filter by role
+```
+
+No new dependencies — all HTTP calls use Python's stdlib `urllib`.
+
+---
+
+## Praxis Agent
+
+v1.2 ships a native Praxis agent that replaces NanoClaw — a Claude-powered conversational agent with direct `.px` execution built in. No subprocess, no translation layer. The agent lives inside Praxis and knows every verb natively.
+
+### Quick start
+
+```bash
+pip install praxis-lang[agent]
+
+export ANTHROPIC_API_KEY=sk-ant-...
+export TELEGRAM_BOT_TOKEN=your-token-from-botfather
+export TELEGRAM_CHAT_IDS=123456789   # your chat id — whitelist recommended
+
+praxis agent
+```
+
+The agent listens on Telegram and can:
+- **Run programs** — `run LOG.msg -> SUMM.text` executes immediately
+- **Validate** — checks syntax before you schedule anything
+- **Plan goals** — natural language → `.px` program via the planner (requires `--provider`)
+- **Schedule** — add programs to the cron Scheduler with an interval
+- **List / remove schedules** — manage what's running
+- **Recall** — search ProgramMemory for similar past programs
+
+### Docker (production)
+
+```bash
+# Copy and fill in your keys
+cp praxis/agent/.env.example .env
+
+# Start
+docker compose -f praxis/agent/docker-compose.yml up -d
+
+# Logs
+docker compose -f praxis/agent/docker-compose.yml logs -f
+```
+
+Persistent data (memory.db, schedule.db, execution.log) is stored in the `praxis_data` named volume.
+
+### CLI options
+
+```bash
+praxis agent --help
+
+# Run locally with goal planning
+praxis agent \
+  --token $TELEGRAM_BOT_TOKEN \
+  --chat-id 123456789 \
+  --provider anthropic \
+  --schedule \
+  --memory \
+  --mode prod
+```
+
+### Security
+
+The agent runs Praxis programs in the same sandboxing layers that guard all other execution paths:
+1. **CAP enforcement** — verb allow-lists per program (Sprint 11)
+2. **SandboxedExecutor** — subprocess isolation with `allowed_paths` + timeouts (Sprint 15)
+3. **Resource limits** — `ResourceLimitExceeded` on CPU/memory/steps (Sprint 10)
+4. **Chat whitelist** — set `--chat-id` (or `TELEGRAM_CHAT_IDS`) to restrict who can use the agent
+
+For production deployments the Docker container adds a fourth OS-level layer on top of these.
+
+### Provider support
+
+The agent conversation loop always uses Claude (via `ANTHROPIC_API_KEY`). The Planner for goal→program translation is independently configurable:
+
+```bash
+praxis agent --provider ollama --model phi4   # plan with local Ollama, converse with Claude
+praxis agent --provider openai                # plan with GPT-4o
+```
+
+---
+
+## Chuck Integration
+
+If you use [Chuck](https://github.com/cssmith615/chuck) for Claude Code context management, Praxis ships as a built-in pack:
+
+```bash
+chuck add praxis
+```
+
+This installs 14 rules covering Praxis best practices into your Chuck domain. They activate automatically when Claude is working with `.px` files, workflows, or pipelines. The Chuck monitor also validates `.px` files on write and surfaces `praxis validate` errors inline before Claude continues.
+
+---
+
 ## Self-Improvement Loop
 
 v0.5 introduces `praxis improve` — the runtime watches itself run and proposes rules that prevent recurrence of observed failures.
@@ -502,6 +685,9 @@ The improvement loop closes the feedback cycle: programs run → failures are lo
 | **v0.7** | ✅ Released | `praxis serve` — local web dashboard: programs, logs, constitution, live editor |
 | **v0.8** | ✅ Released | Resource limits: per-step timeout, wall-clock budget, output size cap enforced in executor |
 | **v0.9** | ✅ Released | CAP enforcement at runtime; optimizer (parallelization, dead step elimination, constant folding); performance rewriter; TypeScript + WASM code generators; process isolation sandbox; outcome-driven program evolution |
+| **v1.0** | ✅ Released | Interactive REPL (`praxis chat`); VS Code extension with syntax highlighting, inline validation, and run commands; Chuck integration (`chuck add praxis`) |
+| **v1.1** | ✅ Released | Distributed workers: `SPAWN` with `url=` routes over HTTP; hub registration/heartbeat/dispatch on bridge; `praxis worker` CLI; `WorkerClient` discovery |
+| **v1.2** | ✅ Released | Praxis Agent: native Claude tool-use loop with 7 Praxis tools; Telegram channel (urllib, no new deps); `praxis agent` CLI; Docker-ready; replaces NanoClaw. Full XFRM/FILTER/SORT handler implementations; FETCH fan-out (`$item` substitution over lists); `src=` param alias. 712 tests passing. |
 
 ---
 

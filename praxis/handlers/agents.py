@@ -47,19 +47,22 @@ def spawn_handler(target: list[str], params: dict, ctx) -> Any:
     """
     SPAWN — Create a named worker agent and register it in ctx.agent_registry.
 
-    Usage:
+    Local (in-process) usage:
         SPAWN.data_worker(role=data, verbs=[ING,CLN,XFRM])
-        SPAWN.analysis_worker(role=analysis, verbs=[SUMM,EVAL,GEN])
+
+    Remote (distributed) usage — provide a url= param pointing to a running
+    Praxis bridge.  MSG/JOIN/CAST then route over HTTP automatically:
+        SPAWN.data_worker(role=data, verbs=[ING,CLN,XFRM], url=http://host:7821)
 
     The spawned worker uses the same handler registry as the coordinator
     unless a custom `handlers` key is provided in params.
     """
     from praxis.agent_registry import AgentRegistry, Worker
-    from praxis.executor import Executor
 
     agent_id = target[0] if target else params.get("id", "worker")
     role     = params.get("role", "worker")
     verbs    = params.get("verbs", [])
+    url      = params.get("url")           # None → local, str → remote
 
     if isinstance(verbs, str):
         verbs = [v.strip() for v in verbs.split(",")]
@@ -73,7 +76,30 @@ def spawn_handler(target: list[str], params: dict, ctx) -> Any:
     if not hasattr(ctx, "pending_futures"):
         ctx.pending_futures = {}
 
-    # Build worker executor — inherits the same handler set as the coordinator
+    # ── Remote worker ─────────────────────────────────────────────────────────
+    if url:
+        from praxis.distributed import RemoteWorker
+        worker = RemoteWorker(
+            agent_id=agent_id,
+            role=role,
+            verbs=verbs,
+            url=url,
+            mode=ctx.mode,
+        )
+        ctx.agent_registry.register(worker)
+        return {
+            "agent_id":   agent_id,
+            "role":       role,
+            "verbs":      verbs,
+            "status":     "spawned",
+            "registered": True,
+            "remote":     True,
+            "url":        url,
+        }
+
+    # ── Local worker ──────────────────────────────────────────────────────────
+    from praxis.executor import Executor
+
     if hasattr(ctx, "_handlers") and ctx._handlers:
         worker_exe = Executor(ctx._handlers, mode=ctx.mode)
     else:
@@ -91,11 +117,12 @@ def spawn_handler(target: list[str], params: dict, ctx) -> Any:
     ctx.agent_registry.register(worker)
 
     return {
-        "agent_id":  agent_id,
-        "role":      role,
-        "verbs":     verbs,
-        "status":    "spawned",
+        "agent_id":   agent_id,
+        "role":       role,
+        "verbs":      verbs,
+        "status":     "spawned",
         "registered": True,
+        "remote":     False,
     }
 
 

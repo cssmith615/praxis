@@ -38,7 +38,8 @@ from praxis.constitution import Constitution
 from praxis.planner import Planner, PlanningFailure
 from praxis.improver import Improver
 from praxis.providers import resolve_provider
-from praxis.server import serve as _serve, DEFAULT_HOST, DEFAULT_PORT
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 7822
 
 console = Console()
 
@@ -439,9 +440,11 @@ def serve_cmd(host: str, port: int, open_browser: bool):
         threading.Thread(target=_open, daemon=True).start()
 
     try:
+        from praxis.server import serve as _serve
         _serve(host=host, port=port)
     except ImportError as exc:
         console.print(f"[bold red]Missing dependency:[/] {exc}")
+        console.print("[dim]Install with: pip install praxis-lang[bridge][/]")
         sys.exit(1)
 
 
@@ -500,6 +503,254 @@ def compile_cmd(
         console.print(f"[bold green]Compiled → {out_path}[/]")
     else:
         click.echo(code)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# praxis worker
+# ──────────────────────────────────────────────────────────────────────────────
+
+@main.command("worker")
+@click.option("--port", "-p", default=7821, show_default=True, type=int,
+              help="Port to serve this worker's bridge on")
+@click.option("--host", default="0.0.0.0", show_default=True,
+              help="Bind address for this worker's bridge")
+@click.option("--id", "worker_id", default=None,
+              help="Worker agent_id (default: hostname-<port>)")
+@click.option("--role", default="worker", show_default=True,
+              help="Worker role label")
+@click.option("--verbs", default=None,
+              help="Comma-separated list of verbs this worker handles (default: all)")
+@click.option("--hub", "hub_url", default=None,
+              help="Hub URL to register with (e.g. http://hub:7821). Optional.")
+@click.option("--advertise", default=None,
+              help="URL that the hub should use to reach this worker. "
+                   "Default: http://<host>:<port>")
+@click.option("--heartbeat", default=30, show_default=True, type=int,
+              help="Seconds between heartbeat pings to the hub (0 = disable)")
+def worker_cmd(
+    port: int,
+    host: str,
+    worker_id: str | None,
+    role: str,
+    verbs: str | None,
+    hub_url: str | None,
+    advertise: str | None,
+    heartbeat: int,
+):
+    """
+    Start a Praxis worker process.
+
+    The worker serves a local Praxis bridge (POST /execute) and optionally
+    registers itself with a hub so coordinators can discover it.
+
+    Examples:
+        praxis worker --port 7823 --hub http://hub:7821 --role data --verbs ING,CLN,XFRM
+        praxis worker --port 7824 --id analysis --role analysis --verbs SUMM,EVAL,GEN
+    """
+    import socket
+    import threading
+
+    from praxis.distributed import WorkerClient
+
+    hostname = socket.gethostname()
+    wid      = worker_id or f"{hostname}-{port}"
+    verb_list = [v.strip().upper() for v in verbs.split(",")] if verbs else []
+    worker_url = advertise or f"http://{hostname}:{port}"
+
+    console.print(f"\n[bold cyan]Praxis Worker[/]  id=[bold]{wid}[/]  port={port}")
+    console.print(f"  role=[bold]{role}[/]  verbs={verb_list or 'all'}")
+    if hub_url:
+        console.print(f"  hub=[dim]{hub_url}[/]  advertise=[dim]{worker_url}[/]")
+    console.print("[dim]  Press Ctrl+C to stop.\n[/]")
+
+    # ── Register with hub ────────────────────────────────────────────────────
+    client: WorkerClient | None = None
+    if hub_url:
+        client = WorkerClient(hub_url)
+        ok = client.register(wid, role, verb_list, worker_url)
+        if ok:
+            console.print(f"[green]✓[/] Registered with hub at {hub_url}")
+        else:
+            console.print(f"[yellow]⚠[/] Could not register with hub — continuing anyway")
+
+    # ── Background heartbeat ─────────────────────────────────────────────────
+    _stop_event = threading.Event()
+
+    def _heartbeat_loop() -> None:
+        while not _stop_event.wait(heartbeat):
+            if client:
+                client.heartbeat(wid)
+
+    if client and heartbeat > 0:
+        hb_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
+        hb_thread.start()
+
+    # ── Serve bridge ─────────────────────────────────────────────────────────
+    try:
+        import uvicorn
+        from praxis.bridge import app
+        uvicorn.run(app, host=host, port=port, log_level="info")
+    except ImportError as exc:
+        console.print(f"[bold red]Missing dependency:[/] {exc}")
+        sys.exit(1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        _stop_event.set()
+        if client:
+            client.deregister(wid)
+            console.print(f"[dim]Deregistered {wid} from hub.[/]")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# praxis chat
+# ──────────────────────────────────────────────────────────────────────────────
+
+@main.command("chat")
+@click.option("--mode", "-m", default="dev", type=click.Choice(["dev", "prod"]),
+              show_default=True, help="Execution mode")
+@click.option("--db", default=None, help="Path to program memory SQLite file")
+@click.option("--provider", "-p", default=None,
+              type=click.Choice(["anthropic", "openai", "ollama", "grok", "gemini"],
+                                case_sensitive=False),
+              help="LLM provider for goal mode (default: auto-detect from env)")
+@click.option("--model", default=None, help="Model override for the chosen provider")
+def chat_cmd(mode: str, db: str | None, provider: str | None, model: str | None):
+    """
+    Start the interactive Praxis REPL.
+
+    Type .px programs directly or natural-language goals (requires an LLM
+    provider).  Session commands start with : — type :help for the full list.
+    """
+    from praxis.chat import PraxisREPL
+    from praxis.memory import ProgramMemory
+
+    memory = ProgramMemory(db_path=db)
+
+    llm_provider = None
+    try:
+        llm_provider = resolve_provider(provider=provider, model=model)
+    except Exception:
+        pass   # goal mode simply disabled; not a fatal error in chat
+
+    repl = PraxisREPL(memory=memory, provider=llm_provider, mode=mode)
+    repl.run()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# praxis agent
+# ──────────────────────────────────────────────────────────────────────────────
+
+@main.command("agent")
+@click.option("--token", envvar="TELEGRAM_BOT_TOKEN",
+              help="Telegram bot token (or set TELEGRAM_BOT_TOKEN env var)")
+@click.option("--chat-id", "chat_ids", multiple=True, envvar="TELEGRAM_CHAT_IDS",
+              help="Allowed Telegram chat id(s). Can be repeated. "
+                   "Env: TELEGRAM_CHAT_IDS (comma-separated). "
+                   "Leave empty to allow any chat (not recommended).")
+@click.option("--trigger", default=None, envvar="AGENT_TRIGGER",
+              help="Trigger word prefix for group chats (e.g. '@praxis'). "
+                   "Env: AGENT_TRIGGER.")
+@click.option("--mode", "-m", default="dev", type=click.Choice(["dev", "prod"]),
+              show_default=True, help="Praxis execution mode")
+@click.option("--provider", "-p", default=None,
+              type=click.Choice(["anthropic", "openai", "ollama", "grok", "gemini"],
+                                case_sensitive=False),
+              help="LLM provider for goal planning (default: auto-detect from env)")
+@click.option("--model", default=None, help="Model override for the chosen provider")
+@click.option("--agent-model", default="claude-sonnet-4-6", show_default=True,
+              help="Claude model for the agent conversation loop")
+@click.option("--schedule/--no-schedule", default=False,
+              help="Enable the Scheduler background thread")
+@click.option("--memory/--no-memory", "use_memory", default=False,
+              help="Enable ProgramMemory (requires sentence-transformers)")
+@click.option("--db", default=None, help="Custom database directory path")
+@click.option("--api-key", envvar="ANTHROPIC_API_KEY",
+              help="Anthropic API key. Env: ANTHROPIC_API_KEY")
+def agent_cmd(
+    token: str | None,
+    chat_ids: tuple[str, ...],
+    trigger: str | None,
+    mode: str,
+    provider: str | None,
+    model: str | None,
+    agent_model: str,
+    schedule: bool,
+    use_memory: bool,
+    db: str | None,
+    api_key: str | None,
+):
+    """
+    Start the Praxis Agent — a native AI agent with direct .px execution.
+
+    The agent listens on Telegram (or another channel) and can run programs,
+    validate syntax, plan goals, schedule tasks, and search program memory —
+    all without any translation layer.
+
+    Quick start:
+
+    \b
+        export ANTHROPIC_API_KEY=sk-ant-...
+        export TELEGRAM_BOT_TOKEN=your-token
+        export TELEGRAM_CHAT_IDS=123456789
+        praxis agent
+
+    Run with Docker:
+
+    \b
+        docker compose -f praxis/agent/docker-compose.yml up -d
+    """
+    if not token:
+        console.print(
+            "[bold red]No Telegram token.[/] "
+            "Pass --token or set TELEGRAM_BOT_TOKEN."
+        )
+        sys.exit(1)
+
+    from praxis.agent.core import PraxisAgent
+    from praxis.agent.runner import AgentRunner
+    from praxis.agent.channels.telegram import TelegramChannel
+
+    # Handle comma-separated chat ids from env var
+    allowed: set[str] = set()
+    for cid in chat_ids:
+        # env var may be comma-separated, click may pass as single string
+        for part in cid.split(","):
+            part = part.strip()
+            if part:
+                allowed.add(part)
+
+    channel = TelegramChannel(
+        token=token,
+        allowed_chat_ids=allowed or None,
+        trigger_word=trigger,
+    )
+
+    agent = PraxisAgent(model=agent_model, api_key=api_key)
+
+    runner = AgentRunner(
+        agent=agent,
+        channel=channel,
+        mode=mode,
+        provider=provider,
+        model=model,
+        enable_scheduler=schedule,
+        enable_memory=use_memory,
+        db_path=db,
+    )
+
+    console.print(
+        f"\n[bold cyan]Praxis Agent[/]  model=[bold]{agent_model}[/]  mode={mode}"
+    )
+    if allowed:
+        console.print(f"  chat whitelist: {sorted(allowed)}")
+    else:
+        console.print("  [yellow]⚠  No chat whitelist — all chats accepted[/]")
+    if trigger:
+        console.print(f"  trigger word: [bold]{trigger}[/]")
+    console.print("[dim]  Press Ctrl+C to stop.\n[/]")
+
+    runner.run()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
