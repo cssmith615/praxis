@@ -372,3 +372,147 @@ class TestRun:
         d = tc.post("/api/run", json={"program": "LOG.ok -> ASSERT.false_cond"}).json()
         # Either ok=False or steps contain an error — either is valid behaviour
         assert d is not None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GET /api/schedules  DELETE /api/schedules/{id}  PATCH /api/schedules/{id}
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_schedule_db(path: Path, rows: list[tuple]) -> None:
+    """Create a schedule.db with the given rows (id, goal, program_text, interval_seconds, next_run_at, last_run_at, last_outcome, enabled)."""
+    conn = sqlite3.connect(path)
+    conn.execute("""
+        CREATE TABLE schedule (
+            id TEXT PRIMARY KEY,
+            goal TEXT,
+            program_text TEXT,
+            interval_seconds INTEGER,
+            next_run_at REAL,
+            last_run_at REAL,
+            last_outcome TEXT,
+            enabled INTEGER DEFAULT 1
+        )
+    """)
+    conn.executemany(
+        "INSERT INTO schedule VALUES (?,?,?,?,?,?,?,?)", rows
+    )
+    conn.commit()
+    conn.close()
+
+
+class TestSchedulesApi:
+    def test_no_db_returns_empty(self, client):
+        tc, paths = client
+        sched_db = paths["mem_db"].parent / "schedule.db"
+        with patch("praxis.server._SCHEDULE_DB", sched_db):
+            d = tc.get("/api/schedules").json()
+        assert d["schedules"] == []
+
+    def test_lists_schedules(self, client, tmp_path):
+        tc, _ = client
+        sched_db = tmp_path / "schedule.db"
+        import time
+        now = time.time()
+        _make_schedule_db(sched_db, [
+            ("abc123", "fetch news daily", "FETCH.news", 86400, now + 3600, None, None, 1),
+            ("def456", "send report", "OUT.email", 3600, now - 60, now - 3660, "ok", 1),
+        ])
+        with patch("praxis.server._SCHEDULE_DB", sched_db):
+            d = tc.get("/api/schedules").json()
+        assert len(d["schedules"]) == 2
+        ids = {s["id"] for s in d["schedules"]}
+        assert ids == {"abc123", "def456"}
+
+    def test_schedule_fields_present(self, client, tmp_path):
+        tc, _ = client
+        sched_db = tmp_path / "schedule.db"
+        import time
+        _make_schedule_db(sched_db, [
+            ("aaa111", "test goal", "LOG.x", 600, time.time() + 300, None, None, 1),
+        ])
+        with patch("praxis.server._SCHEDULE_DB", sched_db):
+            s = tc.get("/api/schedules").json()["schedules"][0]
+        for field in ("id", "goal", "program", "interval_seconds", "next_run_at", "enabled", "overdue"):
+            assert field in s, f"missing field: {field}"
+
+    def test_overdue_flag(self, client, tmp_path):
+        tc, _ = client
+        sched_db = tmp_path / "schedule.db"
+        import time
+        now = time.time()
+        _make_schedule_db(sched_db, [
+            ("over1", "overdue job", "LOG.x", 60, now - 120, None, None, 1),
+            ("future1", "future job", "LOG.y", 60, now + 3600, None, None, 1),
+        ])
+        with patch("praxis.server._SCHEDULE_DB", sched_db):
+            schedules = {s["id"]: s for s in tc.get("/api/schedules").json()["schedules"]}
+        assert schedules["over1"]["overdue"] is True
+        assert schedules["future1"]["overdue"] is False
+
+    def test_disabled_not_overdue(self, client, tmp_path):
+        tc, _ = client
+        sched_db = tmp_path / "schedule.db"
+        import time
+        _make_schedule_db(sched_db, [
+            ("paused1", "paused job", "LOG.x", 60, time.time() - 120, None, None, 0),
+        ])
+        with patch("praxis.server._SCHEDULE_DB", sched_db):
+            s = tc.get("/api/schedules").json()["schedules"][0]
+        assert s["overdue"] is False
+        assert s["enabled"] is False
+
+    def test_delete_schedule(self, client, tmp_path):
+        tc, _ = client
+        sched_db = tmp_path / "schedule.db"
+        import time
+        _make_schedule_db(sched_db, [
+            ("del1", "to delete", "LOG.x", 60, time.time() + 60, None, None, 1),
+        ])
+        with patch("praxis.server._SCHEDULE_DB", sched_db):
+            r = tc.delete("/api/schedules/del1")
+            assert r.status_code == 200
+            assert r.json()["deleted"] == 1
+            remaining = tc.get("/api/schedules").json()["schedules"]
+        assert remaining == []
+
+    def test_delete_nonexistent_404(self, client, tmp_path):
+        tc, _ = client
+        sched_db = tmp_path / "schedule.db"
+        _make_schedule_db(sched_db, [])
+        with patch("praxis.server._SCHEDULE_DB", sched_db):
+            r = tc.delete("/api/schedules/nope")
+        assert r.status_code == 404
+
+    def test_patch_disable(self, client, tmp_path):
+        tc, _ = client
+        sched_db = tmp_path / "schedule.db"
+        import time
+        _make_schedule_db(sched_db, [
+            ("tog1", "toggle me", "LOG.x", 60, time.time() + 60, None, None, 1),
+        ])
+        with patch("praxis.server._SCHEDULE_DB", sched_db):
+            r = tc.patch("/api/schedules/tog1", json={"enabled": False})
+            assert r.status_code == 200
+            s = tc.get("/api/schedules").json()["schedules"][0]
+        assert s["enabled"] is False
+
+    def test_patch_enable(self, client, tmp_path):
+        tc, _ = client
+        sched_db = tmp_path / "schedule.db"
+        import time
+        _make_schedule_db(sched_db, [
+            ("tog2", "re-enable", "LOG.x", 60, time.time() + 60, None, None, 0),
+        ])
+        with patch("praxis.server._SCHEDULE_DB", sched_db):
+            r = tc.patch("/api/schedules/tog2", json={"enabled": True})
+            assert r.status_code == 200
+            s = tc.get("/api/schedules").json()["schedules"][0]
+        assert s["enabled"] is True
+
+    def test_patch_nonexistent_404(self, client, tmp_path):
+        tc, _ = client
+        sched_db = tmp_path / "schedule.db"
+        _make_schedule_db(sched_db, [])
+        with patch("praxis.server._SCHEDULE_DB", sched_db):
+            r = tc.patch("/api/schedules/ghost", json={"enabled": False})
+        assert r.status_code == 404

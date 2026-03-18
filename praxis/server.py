@@ -1,11 +1,12 @@
 """
 praxis serve — local web dashboard
 
-Serves a browser UI at http://localhost:7822 with five tabs:
+Serves a browser UI at http://localhost:7822 with six tabs:
   Dashboard    — stats overview + recent activity
   Programs     — full program memory library with search
   Logs         — live execution history from ~/.praxis/execution.log
   Constitution — view and add constitutional rules
+  Schedules    — view, enable/disable, and delete scheduled jobs
   Editor       — write and run Praxis programs in-browser
 
 API routes (all JSON):
@@ -16,6 +17,9 @@ API routes (all JSON):
   GET  /api/logs?limit=N
   GET  /api/constitution
   POST /api/constitution/rules   {rule_text, verbs}
+  GET  /api/schedules
+  DELETE /api/schedules/{id}
+  PATCH /api/schedules/{id}      {enabled: bool}
   POST /api/run                  {program, mode}
 
 Start:
@@ -42,10 +46,11 @@ from praxis.handlers import HANDLERS
 from praxis.memory import ProgramMemory
 from praxis.constitution import Constitution
 
-_PRAXIS_DIR = Path.home() / ".praxis"
-_LOG_PATH   = _PRAXIS_DIR / "execution.log"
-_KV_DB      = _PRAXIS_DIR / "kv.db"
-_MEM_DB     = _PRAXIS_DIR / "memory.db"
+_PRAXIS_DIR  = Path.home() / ".praxis"
+_LOG_PATH    = _PRAXIS_DIR / "execution.log"
+_KV_DB       = _PRAXIS_DIR / "kv.db"
+_MEM_DB      = _PRAXIS_DIR / "memory.db"
+_SCHEDULE_DB = _PRAXIS_DIR / "schedule.db"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Singletons
@@ -217,6 +222,80 @@ def add_rule(req: AddRuleRequest) -> dict:
     const = _get_constitution()
     added = const.append_rule(req.rule_text, req.verbs, source="dashboard")
     return {"added": added, "total": len(const)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# API — schedules
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/schedules")
+def list_schedules() -> dict:
+    if not _SCHEDULE_DB.exists():
+        return {"schedules": []}
+    conn = sqlite3.connect(_SCHEDULE_DB)
+    try:
+        rows = conn.execute(
+            "SELECT id, goal, program_text, interval_seconds, next_run_at, "
+            "last_run_at, last_outcome, enabled FROM schedule ORDER BY next_run_at"
+        ).fetchall()
+    finally:
+        conn.close()
+    schedules = []
+    import time
+    now = time.time()
+    for row in rows:
+        sid, goal, program_text, interval_seconds, next_run_at, last_run_at, last_outcome, enabled = row
+        schedules.append({
+            "id":               sid,
+            "goal":             goal or "",
+            "program":          program_text or "",
+            "interval_seconds": interval_seconds,
+            "next_run_at":      next_run_at,
+            "last_run_at":      last_run_at,
+            "last_outcome":     last_outcome or "",
+            "enabled":          bool(enabled),
+            "overdue":          bool(enabled and next_run_at and next_run_at < now),
+        })
+    return {"schedules": schedules}
+
+
+@app.delete("/api/schedules/{schedule_id}")
+def delete_schedule(schedule_id: str) -> dict:
+    if not _SCHEDULE_DB.exists():
+        raise HTTPException(status_code=404, detail="Schedule database not found")
+    conn = sqlite3.connect(_SCHEDULE_DB)
+    try:
+        cur = conn.execute("DELETE FROM schedule WHERE id = ?", (schedule_id,))
+        conn.commit()
+        deleted = cur.rowcount
+    finally:
+        conn.close()
+    if deleted == 0:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    return {"deleted": deleted}
+
+
+class PatchScheduleRequest(BaseModel):
+    enabled: bool
+
+
+@app.patch("/api/schedules/{schedule_id}")
+def patch_schedule(schedule_id: str, req: PatchScheduleRequest) -> dict:
+    if not _SCHEDULE_DB.exists():
+        raise HTTPException(status_code=404, detail="Schedule database not found")
+    conn = sqlite3.connect(_SCHEDULE_DB)
+    try:
+        cur = conn.execute(
+            "UPDATE schedule SET enabled = ? WHERE id = ?",
+            (1 if req.enabled else 0, schedule_id),
+        )
+        conn.commit()
+        updated = cur.rowcount
+    finally:
+        conn.close()
+    if updated == 0:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    return {"id": schedule_id, "enabled": req.enabled}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -401,6 +480,7 @@ _HTML = """<!DOCTYPE html>
   <span id="tab-programs"  class="tab" onclick="showTab('programs')">Programs</span>
   <span id="tab-logs"      class="tab" onclick="showTab('logs')">Logs</span>
   <span id="tab-constitution" class="tab" onclick="showTab('constitution')">Constitution</span>
+  <span id="tab-schedules" class="tab" onclick="showTab('schedules')">Schedules</span>
   <span id="tab-editor"    class="tab" onclick="showTab('editor')">Editor</span>
   <div class="spacer"></div>
   <span class="provider-badge" id="provider-badge">—</span>
@@ -473,6 +553,20 @@ _HTML = """<!DOCTYPE html>
   </div>
 </div>
 
+<!-- ── SCHEDULES ── -->
+<div id="page-schedules" class="page">
+  <div class="toolbar">
+    <span class="section-title" style="margin:0">Scheduled Jobs</span>
+    <span id="sched-count" style="color:var(--muted);font-size:13px;margin-left:8px"></span>
+    <div class="spacer"></div>
+    <button class="btn secondary" onclick="loadSchedules()">↻ Refresh</button>
+  </div>
+  <table>
+    <thead><tr><th>ID</th><th>Goal</th><th>Interval</th><th>Next Run</th><th>Last Run</th><th>Last Outcome</th><th>Status</th><th></th></tr></thead>
+    <tbody id="schedules-tbody"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
+  </table>
+</div>
+
 <!-- ── EDITOR ── -->
 <div id="page-editor" class="page">
   <div class="toolbar">
@@ -525,6 +619,7 @@ function showTab(name) {
   if (name === 'programs') loadPrograms();
   if (name === 'logs') loadLogs();
   if (name === 'constitution') loadConstitution();
+  if (name === 'schedules') loadSchedules();
 }
 
 // ── stats ─────────────────────────────────────────────────────────────────
@@ -674,6 +769,71 @@ async function addRule() {
     msg.style.color = 'var(--yellow)';
     msg.textContent = 'Duplicate — rule already exists.';
   }
+}
+
+// ── schedules ─────────────────────────────────────────────────────────────
+function fmtInterval(seconds) {
+  if (!seconds) return '—';
+  if (seconds < 120)  return seconds + 's';
+  if (seconds < 7200) return Math.round(seconds / 60) + 'm';
+  if (seconds < 172800) return Math.round(seconds / 3600) + 'h';
+  return Math.round(seconds / 86400) + 'd';
+}
+
+function fmtTs(ts) {
+  if (!ts) return '—';
+  return new Date(ts * 1000).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+}
+
+async function loadSchedules() {
+  const r = await fetch('/api/schedules');
+  const d = await r.json();
+  const schedules = d.schedules || [];
+  document.getElementById('sched-count').textContent =
+    schedules.length + ' job' + (schedules.length !== 1 ? 's' : '');
+  const tbody = document.getElementById('schedules-tbody');
+  if (!schedules.length) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty">No scheduled jobs. Use <code>praxis agent</code> and ask to schedule a program.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = schedules.map(s => {
+    const enabledBadge = s.enabled
+      ? '<span class="badge ok">enabled</span>'
+      : '<span class="badge partial">paused</span>';
+    const overdueBadge = s.overdue ? ' <span class="badge error" style="font-size:10px">overdue</span>' : '';
+    const outcomeBadge = s.last_outcome
+      ? `<span class="badge ${s.last_outcome === 'ok' ? 'ok' : 'error'}">${esc(s.last_outcome)}</span>`
+      : '<span style="color:var(--muted)">—</span>';
+    return `<tr>
+      <td class="mono" style="font-size:11px;color:var(--muted)">${esc(s.id)}</td>
+      <td class="truncate">${esc(s.goal || '—')}</td>
+      <td class="mono">${fmtInterval(s.interval_seconds)}</td>
+      <td class="mono" style="font-size:12px">${fmtTs(s.next_run_at)}${overdueBadge}</td>
+      <td class="mono" style="font-size:12px">${fmtTs(s.last_run_at)}</td>
+      <td>${outcomeBadge}</td>
+      <td>${enabledBadge}</td>
+      <td style="display:flex;gap:6px;padding:6px 12px">
+        <button class="btn secondary" style="padding:3px 10px;font-size:11px"
+          onclick="toggleSchedule('${esc(s.id)}', ${!s.enabled})">${s.enabled ? 'Pause' : 'Resume'}</button>
+        <button class="btn danger" style="padding:3px 10px;font-size:11px"
+          onclick="deleteSchedule('${esc(s.id)}')">Delete</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+async function toggleSchedule(id, enable) {
+  await fetch('/api/schedules/' + id, {
+    method: 'PATCH', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ enabled: enable })
+  });
+  loadSchedules();
+}
+
+async function deleteSchedule(id) {
+  if (!confirm('Delete schedule ' + id + '?')) return;
+  await fetch('/api/schedules/' + id, { method: 'DELETE' });
+  loadSchedules();
 }
 
 // ── editor ────────────────────────────────────────────────────────────────
