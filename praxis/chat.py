@@ -98,11 +98,16 @@ class PraxisREPL:
         """Start the REPL loop."""
         self._print_banner()
 
-        # Enable readline history if available
+        # Enable readline history with cross-session persistence
+        _history_file = Path.home() / ".praxis" / "repl_history"
         try:
-            import readline  # noqa: F401
-        except ImportError:
-            pass
+            import readline
+            _history_file.parent.mkdir(parents=True, exist_ok=True)
+            if _history_file.exists():
+                readline.read_history_file(str(_history_file))
+            readline.set_history_length(500)
+        except (ImportError, OSError):
+            readline = None  # type: ignore[assignment]
 
         while True:
             try:
@@ -141,6 +146,13 @@ class PraxisREPL:
                 self._dispatch(full)
             else:
                 self._dispatch(line)
+
+        # Save readline history for next session
+        try:
+            if readline is not None:
+                readline.write_history_file(str(_history_file))
+        except (NameError, OSError):
+            pass
 
     # ── Dispatch ──────────────────────────────────────────────────────────────
 
@@ -302,6 +314,12 @@ class PraxisREPL:
 
         if cmd in ("quit", "exit", "q"):
             console.print("[dim]Bye.[/]")
+            try:
+                import readline
+                _history_file = Path.home() / ".praxis" / "repl_history"
+                readline.write_history_file(str(_history_file))
+            except (ImportError, OSError):
+                pass
             sys.exit(0)
 
         elif cmd == "help":

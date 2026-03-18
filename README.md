@@ -596,6 +596,16 @@ docker compose -f praxis/agent/docker-compose.yml logs -f
 
 Persistent data (memory.db, schedule.db, execution.log) is stored in the `praxis_data` named volume.
 
+### VPS deployment (24/7)
+
+To run the agent permanently on a cheap Linux server (~$4–6/month), see **[DEPLOY.md](DEPLOY.md)** for the full guide. One-shot setup on a fresh Ubuntu VPS:
+
+```bash
+ssh root@your-server-ip
+curl -fsSL https://raw.githubusercontent.com/cssmith615/praxis/main/scripts/setup-vps.sh | bash
+# then: edit /opt/praxis/.env and docker compose up -d --build
+```
+
 ### CLI options
 
 ```bash

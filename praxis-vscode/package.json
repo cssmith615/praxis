@@ -2,7 +2,7 @@
   "name": "praxis-lang",
   "displayName": "Praxis Language",
   "description": "Syntax highlighting, validation, and autocomplete for Praxis .px workflow files",
-  "version": "0.1.0",
+  "version": "1.2.0",
   "publisher": "cssmith615",
   "engines": { "vscode": "^1.85.0" },
   "categories": ["Programming Languages", "Linters"],

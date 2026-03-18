@@ -52,3 +52,4 @@ Thumbs.db
 .env.local
 *.key
 secrets.json
+praxis-vscode/*.vsix
