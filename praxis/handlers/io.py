@@ -5,7 +5,7 @@ READ    file read, returns content string
 WRITE   file write, respects GATE in production mode
 FETCH   httpx GET, returns parsed JSON or raw text
 POST    httpx POST with JSON body
-OUT     dispatches to named channel (console default; extensible via register_out_channel)
+OUT     dispatches to named channel (console default; telegram built-in; extensible via register_out_channel)
 STORE   SQLite key/value write  (~/.praxis/kv.db)
 RECALL  SQLite key/value read
 SEARCH  vector search over program memory (delegates to ctx.memory)
@@ -13,8 +13,11 @@ SEARCH  vector search over program memory (delegates to ctx.memory)
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import time
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -138,13 +141,53 @@ def post_handler(target: list[str], params: dict, ctx) -> Any:
     return response.text
 
 
+def _send_telegram(msg: str, params: dict) -> dict:
+    """Send a message via Telegram Bot API using env vars for credentials."""
+    token = params.get("token") or os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat_id = params.get("chat_id") or os.environ.get("TELEGRAM_CHAT_ID", "")
+    if not token:
+        raise RuntimeError("OUT.telegram requires TELEGRAM_BOT_TOKEN env var or token= param")
+    if not chat_id:
+        raise RuntimeError("OUT.telegram requires TELEGRAM_CHAT_ID env var or chat_id= param")
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    # Split long messages at Telegram's 4096-char limit
+    chunks = [msg[i:i + 4096] for i in range(0, max(len(msg), 1), 4096)]
+    for chunk in chunks:
+        data = urllib.parse.urlencode({
+            "chat_id": chat_id,
+            "text": chunk,
+            "parse_mode": "Markdown",
+        }).encode()
+        req = urllib.request.Request(url, data=data, method="POST")
+        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            result = json.loads(resp.read())
+        if not result.get("ok"):
+            raise RuntimeError(f"Telegram API error: {result.get('description', result)}")
+    return {"delivered": True, "chunks": len(chunks), "chat_id": chat_id}
+
+
 def out_handler(target: list[str], params: dict, ctx) -> Any:
-    """OUT — Send to a named channel. Defaults to console. Extend via register_out_channel()."""
+    """OUT — Send to a named channel.
+
+    Built-in channels:
+      OUT.telegram   — sends via Telegram Bot API (reads TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID)
+      OUT.console    — prints to stdout (default)
+
+    Extend with register_out_channel() for custom channels.
+    """
     channel = target[0] if target else "console"
     msg = params.get("msg", str(ctx.last_output) if ctx.last_output is not None else "")
+
+    if channel == "telegram":
+        result = _send_telegram(msg, params)
+        return {"channel": "telegram", "msg": msg, **result}
+
     if channel in _OUT_CHANNELS:
         result = _OUT_CHANNELS[channel](msg, params)
         return {"channel": channel, "msg": msg, "delivered": True, "result": result}
+
     print(f"[OUT.{channel}] {msg}")
     return {"channel": channel, "msg": msg, "delivered": True}
 

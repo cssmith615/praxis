@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "praxis-lang"
-version = "0.1.0"
+version = "1.2.0"
 description = "Praxis — an AI-native intermediate language and runtime for agentic workflows"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -24,7 +24,7 @@ keywords = [
     "praxis",
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
@@ -88,10 +88,10 @@ dev = [
 praxis = "praxis.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/qwibitai/praxis"
-Repository = "https://github.com/qwibitai/praxis"
-"Bug Tracker" = "https://github.com/qwibitai/praxis/issues"
-Changelog = "https://github.com/qwibitai/praxis/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/cssmith615/praxis"
+Repository = "https://github.com/cssmith615/praxis"
+"Bug Tracker" = "https://github.com/cssmith615/praxis/issues"
+Changelog = "https://github.com/cssmith615/praxis/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["praxis"]

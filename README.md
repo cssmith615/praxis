@@ -132,6 +132,26 @@ export ANTHROPIC_API_KEY=sk-ant-...
 praxis goal "fetch the top 5 HN stories and summarize them"
 ```
 
+### Send output to Telegram
+
+Set your credentials once and any program can push results to your phone:
+
+```bash
+export TELEGRAM_BOT_TOKEN=your-token-from-botfather
+export TELEGRAM_CHAT_ID=your-chat-id
+```
+
+```
+FETCH.data(src="https://hacker-news.firebaseio.com/v0/topstories.json") ->
+XFRM.slice(limit=5) ->
+FETCH.data(src="https://hacker-news.firebaseio.com/v0/item/$item.json") ->
+XFRM.pluck(field=title) ->
+XFRM.join(sep="\n") ->
+OUT.telegram
+```
+
+`OUT.telegram` reads `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` from env. Override per-call with `token=` and `chat_id=` params. Works in `praxis run`, `praxis goal`, the REPL, and scheduled programs.
+
 Praxis plans, validates, executes, and stores the program. Next time you run a similar goal it retrieves and adapts the stored version instead of generating from scratch.
 
 ### 5. Browse your program library
@@ -687,7 +707,7 @@ The improvement loop closes the feedback cycle: programs run → failures are lo
 | **v0.9** | ✅ Released | CAP enforcement at runtime; optimizer (parallelization, dead step elimination, constant folding); performance rewriter; TypeScript + WASM code generators; process isolation sandbox; outcome-driven program evolution |
 | **v1.0** | ✅ Released | Interactive REPL (`praxis chat`); VS Code extension with syntax highlighting, inline validation, and run commands; Chuck integration (`chuck add praxis`) |
 | **v1.1** | ✅ Released | Distributed workers: `SPAWN` with `url=` routes over HTTP; hub registration/heartbeat/dispatch on bridge; `praxis worker` CLI; `WorkerClient` discovery |
-| **v1.2** | ✅ Released | Praxis Agent: native Claude tool-use loop with 7 Praxis tools; Telegram channel (urllib, no new deps); `praxis agent` CLI; Docker-ready; replaces NanoClaw. Full XFRM/FILTER/SORT handler implementations; FETCH fan-out (`$item` substitution over lists); `src=` param alias. 712 tests passing. |
+| **v1.2** | ✅ Released | Praxis Agent: native Claude tool-use loop with 7 Praxis tools; Telegram channel (urllib, no new deps); `praxis agent` CLI; Docker-ready; replaces NanoClaw. Full XFRM/FILTER/SORT handler implementations; FETCH fan-out (`$item` substitution over lists); `src=` param alias; `OUT.telegram` built-in channel (env-var credentials, message splitting). 724 tests passing. |
 
 ---
 

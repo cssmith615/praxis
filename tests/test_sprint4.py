@@ -162,6 +162,74 @@ class TestOut:
         assert result["delivered"] is True
         del _OUT_CHANNELS["test_chan"]
 
+    def test_out_telegram_sends_message(self):
+        """OUT.telegram calls the Telegram API with correct params."""
+        from unittest.mock import patch, MagicMock
+        ctx = _ctx(last_output="hello from praxis")
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b'{"ok": true, "result": {}}'
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("praxis.handlers.io.urllib.request.urlopen", return_value=mock_resp):
+            result = out_handler(
+                ["telegram"],
+                {"msg": "hello", "token": "tok123", "chat_id": "999"},
+                ctx,
+            )
+        assert result["channel"] == "telegram"
+        assert result["delivered"] is True
+        assert result["chat_id"] == "999"
+
+    def test_out_telegram_reads_env_vars(self):
+        """OUT.telegram falls back to env vars for credentials."""
+        import os
+        from unittest.mock import patch, MagicMock
+        ctx = _ctx(last_output=None)
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b'{"ok": true, "result": {}}'
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        env = {"TELEGRAM_BOT_TOKEN": "envtok", "TELEGRAM_CHAT_ID": "111"}
+        with patch.dict(os.environ, env):
+            with patch("praxis.handlers.io.urllib.request.urlopen", return_value=mock_resp):
+                result = out_handler(["telegram"], {"msg": "test"}, ctx)
+        assert result["delivered"] is True
+
+    def test_out_telegram_raises_without_token(self):
+        """OUT.telegram raises clearly when no token is available."""
+        import os
+        from unittest.mock import patch
+        ctx = _ctx(last_output=None)
+        env_without_token = {k: v for k, v in os.environ.items()
+                             if k not in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID")}
+        with patch.dict(os.environ, env_without_token, clear=True):
+            try:
+                out_handler(["telegram"], {"msg": "hi", "chat_id": "999"}, ctx)
+                assert False, "Should have raised"
+            except RuntimeError as e:
+                assert "TELEGRAM_BOT_TOKEN" in str(e)
+
+    def test_out_telegram_splits_long_message(self):
+        """OUT.telegram sends multiple API calls for messages over 4096 chars."""
+        from unittest.mock import patch, MagicMock, call
+        ctx = _ctx(last_output=None)
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b'{"ok": true, "result": {}}'
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        long_msg = "x" * 5000
+        with patch("praxis.handlers.io.urllib.request.urlopen", return_value=mock_resp) as mock_open:
+            result = out_handler(
+                ["telegram"],
+                {"msg": long_msg, "token": "tok", "chat_id": "999"},
+                ctx,
+            )
+        assert result["chunks"] == 2
+        assert mock_open.call_count == 2
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Audit handlers
