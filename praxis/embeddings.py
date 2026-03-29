@@ -183,6 +183,15 @@ class EmbeddingsDB:
             ).fetchall()
         return [r[0] for r in rows]
 
+    def sources(self, corpus: str) -> list[str]:
+        """Return distinct source file paths stored in a corpus."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT source FROM embeddings WHERE corpus = ? ORDER BY source",
+                (corpus,),
+            ).fetchall()
+        return [r[0] for r in rows]
+
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 

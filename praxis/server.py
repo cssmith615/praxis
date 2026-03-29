@@ -45,6 +45,7 @@ from praxis.executor import Executor
 from praxis.handlers import HANDLERS
 from praxis.memory import ProgramMemory
 from praxis.constitution import Constitution
+from praxis.embeddings import EmbeddingsDB
 
 _PRAXIS_DIR   = Path.home() / ".praxis"
 _LOG_PATH     = _PRAXIS_DIR / "execution.log"
@@ -60,6 +61,7 @@ _ACTIVITY_LOG = _PRAXIS_DIR / "activity.log"
 
 _memory: ProgramMemory | None = None
 _constitution: Constitution | None = None
+_embeddings_db: EmbeddingsDB | None = None
 
 
 def _get_memory() -> ProgramMemory:
@@ -74,6 +76,13 @@ def _get_constitution() -> Constitution:
     if _constitution is None:
         _constitution = Constitution()
     return _constitution
+
+
+def _get_embeddings_db() -> EmbeddingsDB:
+    global _embeddings_db
+    if _embeddings_db is None:
+        _embeddings_db = EmbeddingsDB()
+    return _embeddings_db
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -554,6 +563,72 @@ def run_program(req: RunRequest) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# API — corpora (RAG)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/corpora")
+def list_corpora() -> dict:
+    db = _get_embeddings_db()
+    names = db.corpora()
+    return {
+        "corpora": [
+            {
+                "name": name,
+                "chunks": db.count(name),
+                "sources": db.sources(name),
+            }
+            for name in names
+        ]
+    }
+
+
+class CorpusSearchRequest(BaseModel):
+    query: str
+    k: int = 5
+    threshold: float = 0.0
+
+
+@app.post("/api/corpora/{name}/search")
+def search_corpus(name: str, req: CorpusSearchRequest) -> dict:
+    db = _get_embeddings_db()
+    results = db.search(req.query, corpus=name, k=req.k, threshold=req.threshold)
+    return {"corpus": name, "query": req.query, "results": results}
+
+
+@app.post("/api/corpora/{name}/reindex")
+def reindex_corpus(name: str) -> dict:
+    db = _get_embeddings_db()
+    sources = db.sources(name)
+    if not sources:
+        raise HTTPException(status_code=404, detail=f"Corpus '{name}' not found or empty")
+
+    from praxis.handlers.data import ing_handler
+
+    total_stored = 0
+    errors: list[str] = []
+
+    for src in sources:
+        # Skip URLs — they require a fresh network fetch the user controls
+        if src.startswith(("http://", "https://")):
+            continue
+        try:
+            from praxis.executor import ExecutionContext
+            ctx = ExecutionContext()
+            chunks = ing_handler(["docs"], {"src": src}, ctx)
+            stored = db.store_chunks(chunks, name)
+            total_stored += stored
+        except Exception as exc:
+            errors.append(f"{src}: {exc}")
+
+    return {
+        "corpus": name,
+        "sources_indexed": len(sources),
+        "chunks_stored": total_stored,
+        "errors": errors,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Dashboard HTML (single-page, no build step)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -711,6 +786,7 @@ _HTML = """<!DOCTYPE html>
   <span id="tab-webhooks"  class="tab" onclick="showTab('webhooks')">Webhooks</span>
   <span id="tab-activity"  class="tab" onclick="showTab('activity')">Activity</span>
   <span id="tab-audit"     class="tab" onclick="showTab('audit')">Audit</span>
+  <span id="tab-corpora"   class="tab" onclick="showTab('corpora')">Corpora</span>
   <span id="tab-editor"    class="tab" onclick="showTab('editor')">Editor</span>
   <div class="spacer"></div>
   <span class="provider-badge" id="provider-badge">—</span>
@@ -847,6 +923,45 @@ _HTML = """<!DOCTYPE html>
   </div>
 </div>
 
+<!-- ── CORPORA ── -->
+<div id="page-corpora" class="page">
+  <div class="cards">
+    <div class="card blue">  <div class="label">Corpora</div>    <div class="value" id="corp-count">—</div> <div class="sub">indexed</div></div>
+    <div class="card green"> <div class="label">Total Chunks</div><div class="value" id="corp-total">—</div> <div class="sub">embedded</div></div>
+  </div>
+  <div class="toolbar">
+    <span class="section-title" style="margin:0">Indexed Corpora</span>
+    <div class="spacer"></div>
+    <button class="btn secondary" onclick="loadCorpora()">↻ Refresh</button>
+  </div>
+  <table style="margin-bottom:32px">
+    <thead><tr><th>Corpus</th><th>Chunks</th><th>Sources</th><th></th></tr></thead>
+    <tbody id="corpora-tbody"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
+  </table>
+  <div class="section-title">Search Playground</div>
+  <div class="add-rule-form">
+    <label>Corpus</label>
+    <select id="search-corpus" style="width:100%"><option value="">— select a corpus —</option></select>
+    <label>Query</label>
+    <input type="text" id="search-query" placeholder="How does authentication work?" style="width:100%" onkeydown="if(event.key==='Enter')searchCorpus()">
+    <div style="display:flex;gap:16px;margin-top:4px">
+      <div>
+        <label>Top-k</label>
+        <input type="number" id="search-k" value="5" min="1" max="20" style="width:72px">
+      </div>
+      <div>
+        <label>Min similarity (0–1)</label>
+        <input type="number" id="search-threshold" value="0.0" min="0" max="1" step="0.05" style="width:100px">
+      </div>
+    </div>
+    <div style="margin-top:14px">
+      <button class="btn" onclick="searchCorpus()">Search</button>
+      <span id="search-msg" style="margin-left:12px;font-size:13px;color:var(--muted)"></span>
+    </div>
+    <div id="search-results" style="margin-top:16px;display:flex;flex-direction:column;gap:10px"></div>
+  </div>
+</div>
+
 <!-- ── EDITOR ── -->
 <div id="page-editor" class="page">
   <div class="toolbar">
@@ -903,6 +1018,7 @@ function showTab(name) {
   if (name === 'webhooks') loadWebhooks();
   if (name === 'activity') loadActivity();
   if (name === 'audit') loadAudit();
+  if (name === 'corpora') loadCorpora();
 }
 
 // ── stats ─────────────────────────────────────────────────────────────────
@@ -1290,6 +1406,101 @@ document.addEventListener('keydown', e => {
     if (activePage && activePage.id === 'page-editor') runProgram();
   }
 });
+
+// ── corpora ───────────────────────────────────────────────────────────────
+async function loadCorpora() {
+  try {
+    const r = await fetch('/api/corpora');
+    const d = await r.json();
+    document.getElementById('corp-count').textContent = d.corpora.length;
+    const total = d.corpora.reduce((s, c) => s + c.chunks, 0);
+    document.getElementById('corp-total').textContent = total;
+
+    const sel = document.getElementById('search-corpus');
+    sel.innerHTML = d.corpora.length
+      ? d.corpora.map(c => `<option value="${esc(c.name)}">${esc(c.name)}</option>`).join('')
+      : '<option value="">No corpora yet</option>';
+
+    const tbody = document.getElementById('corpora-tbody');
+    if (!d.corpora.length) {
+      tbody.innerHTML = '<tr><td colspan="4" class="empty">No corpora indexed yet. Run <code>praxis run .chuck/bootstrap.px</code> to index Chuck decisions.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = d.corpora.map(c => {
+      const preview = c.sources.slice(0, 2).map(s => esc(s.split('/').pop())).join(', ')
+        + (c.sources.length > 2 ? ` +${c.sources.length - 2} more` : '');
+      return `<tr>
+        <td class="mono">${esc(c.name)}</td>
+        <td>${c.chunks}</td>
+        <td style="color:var(--muted);font-size:12px">${preview}</td>
+        <td><button class="btn secondary" style="padding:3px 10px;font-size:11px" onclick="reindexCorpus('${esc(c.name)}')">↻ Re-index</button></td>
+      </tr>`;
+    }).join('');
+  } catch(e) {
+    document.getElementById('corpora-tbody').innerHTML = '<tr><td colspan="4" class="empty">Error loading corpora.</td></tr>';
+  }
+}
+
+async function reindexCorpus(name) {
+  const btns = document.querySelectorAll('#corpora-tbody .btn');
+  btns.forEach(b => { b.disabled = true; b.textContent = '…'; });
+  try {
+    const r = await fetch(`/api/corpora/${encodeURIComponent(name)}/reindex`, { method: 'POST' });
+    const d = await r.json();
+    if (d.errors && d.errors.length) {
+      alert(`Re-index completed with errors:\n${d.errors.join('\n')}`);
+    } else {
+      alert(`↻ Re-indexed ${d.sources_indexed} source(s) — ${d.chunks_stored} chunks stored.`);
+    }
+    loadCorpora();
+  } catch(e) {
+    alert('Re-index request failed.');
+    btns.forEach(b => { b.disabled = false; b.textContent = '↻ Re-index'; });
+  }
+}
+
+async function searchCorpus() {
+  const corpus    = document.getElementById('search-corpus').value;
+  const query     = document.getElementById('search-query').value.trim();
+  const k         = parseInt(document.getElementById('search-k').value) || 5;
+  const threshold = parseFloat(document.getElementById('search-threshold').value) || 0.0;
+  const msg       = document.getElementById('search-msg');
+  const resultsEl = document.getElementById('search-results');
+
+  if (!corpus) { msg.textContent = 'Select a corpus.'; return; }
+  if (!query)  { msg.textContent = 'Enter a query.';   return; }
+
+  msg.textContent = 'Searching…';
+  resultsEl.innerHTML = '';
+
+  try {
+    const r = await fetch(`/api/corpora/${encodeURIComponent(corpus)}/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, k, threshold }),
+    });
+    const d = await r.json();
+    msg.textContent = `${d.results.length} result(s)`;
+    if (!d.results.length) {
+      resultsEl.innerHTML = '<div style="color:var(--muted);text-align:center;padding:20px">No results above threshold.</div>';
+      return;
+    }
+    resultsEl.innerHTML = d.results.map(res => {
+      const sim = (res.similarity * 100).toFixed(1);
+      const simColor = res.similarity > 0.8 ? 'var(--green)' : res.similarity > 0.6 ? 'var(--yellow)' : 'var(--muted)';
+      const fname = esc(res.source.split('/').pop());
+      return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 16px">
+        <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+          <span style="font-size:12px;color:var(--muted)">${fname} · chunk ${res.chunk_index}</span>
+          <span style="font-family:var(--font-mono);font-size:12px;color:${simColor}">${sim}%</span>
+        </div>
+        <div style="font-size:13px;line-height:1.55;white-space:pre-wrap">${esc(res.text)}</div>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    msg.textContent = 'Search failed.';
+  }
+}
 
 // ── utils ─────────────────────────────────────────────────────────────────
 function esc(s) {

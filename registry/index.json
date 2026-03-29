@@ -64,6 +64,30 @@
       "version": "1.0.0",
       "tags": ["slack", "webhook", "bot", "conversational"],
       "program": "LOAD.context ->\nGEN.reply(input=$event.text, context=$context, tone=helpful) ->\nSET.context(persist=true) ->\nOUT.slack(msg=$reply)"
+    },
+    {
+      "name": "index-docs",
+      "description": "Index a directory of documents into a named RAG corpus",
+      "author": "cssmith615",
+      "version": "1.0.0",
+      "tags": ["rag", "index", "embed", "documents", "corpus"],
+      "program": "GOAL:index_docs\n\nING.docs(src=$src, chunk_size=400, overlap=50) ->\nEMBED.text(corpus=$corpus, provider=local) ->\nLOG.msg(msg=\"Indexed corpus: $corpus\")"
+    },
+    {
+      "name": "rag-query",
+      "description": "Ask a question against an indexed RAG corpus and get an LLM answer",
+      "author": "cssmith615",
+      "version": "1.0.0",
+      "tags": ["rag", "query", "retrieval", "gen", "llm"],
+      "program": "GOAL:rag_query\n\nSET.question(value=$question) ->\nRECALL.docs(query=$question, k=5, corpus=$corpus) ->\nSET.context ->\nGEN.answer(\n  prompt=\"Answer this question using ONLY the provided context. If the context does not contain the answer, say so.\\n\\nQuestion: $question\\n\\nContext:\\n$context\\n\\nAnswer:\",\n  provider=claude,\n  max_tokens=1024\n) ->\nOUT.print"
+    },
+    {
+      "name": "agentic-rag",
+      "description": "Multi-hop RAG with EVAL.sufficient — retrieves more context until the LLM says it has enough",
+      "author": "cssmith615",
+      "version": "1.0.0",
+      "tags": ["rag", "agentic", "multi-hop", "eval", "gen", "llm"],
+      "program": "GOAL:agentic_rag\n\nSET.question(value=$question) ->\nSET.max_hops(value=3) ->\nSET.hops(value=0) ->\nRECALL.docs(query=$question, k=5, corpus=$corpus) ->\nSET.context ->\nSET.hops(value=1) ->\nEVAL.sufficient(\n  prompt=\"Is this context sufficient to fully answer the question?\\nQuestion: $question\\nContext: $context\\nReply only YES or NO.\"\n) ->\nSET.sufficient ->\nIF.$sufficient == \"NO\" AND $hops < $max_hops ->\n  GEN.followup_query(\n    prompt=\"What specific additional information should I search for?\\nQuestion: $question\\nContext: $context\\nOutput only a short search query:\"\n  ) ->\n  SET.followup ->\n  RECALL.docs(query=$followup, k=3, corpus=$corpus) ->\n  MERGE ->\n  SET.context ->\nGEN.answer(\n  prompt=\"Answer the question using ONLY the provided context. Cite sources.\\n\\nQuestion: $question\\n\\nContext:\\n$context\\n\\nAnswer:\",\n  provider=claude,\n  max_tokens=1024\n) ->\nOUT.print"
     }
   ]
 }
