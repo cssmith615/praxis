@@ -1,0 +1,11 @@
+// Ask a plain-English question against your indexed corpus.
+// Retrieves the most relevant chunks, then generates a grounded answer.
+// Usage: praxis run query.px
+
+GOAL:rag_query
+
+SET.question(value="How does authentication work in this codebase?") ->
+RECALL.docs(query=$question, k=5, corpus=project_docs, provider=local) ->
+SET.context ->
+GEN.answer(prompt="Answer using ONLY the context below. If the context does not contain enough information, say so.\n\nQuestion: $question\n\nContext:\n$context\n\nAnswer:") ->
+OUT.console

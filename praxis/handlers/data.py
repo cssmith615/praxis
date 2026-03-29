@@ -4,13 +4,22 @@ Data handlers: ING, CLN, XFRM, FILTER, SORT, MERGE
 Sprint 1: ING reads from a file path or returns mock data.
           All others are pass-through stubs that log and return input.
 Sprint 4: Real implementations replace these.
+Sprint A: ING.docs — ingest text/markdown/PDF files and URLs into chunks.
 """
 
 from __future__ import annotations
 import csv
+import hashlib
 import json
 import os
+from pathlib import Path
 from typing import Any
+
+try:
+    import httpx as _httpx
+    _HTTPX = True
+except ImportError:
+    _HTTPX = False
 
 
 def ing_handler(target: list[str], params: dict, ctx) -> Any:
@@ -18,15 +27,21 @@ def ing_handler(target: list[str], params: dict, ctx) -> Any:
     ING — Ingest / load data.
 
     target:  dot-path describing the data source
-             e.g. ['sales', 'db'] | ['flights'] | ['api', 'weather']
+             e.g. ['sales', 'db'] | ['flights'] | ['docs']
 
-    params:
-      path=   file path to ingest (optional; falls back to mock data)
-      format= 'csv' | 'json' | 'auto' (default: auto)
+    params (ING.docs):
+      src=        file path, directory glob, or https:// URL
+      chunk_size= max chars per chunk (default 400)
+      overlap=    overlap chars between chunks (default 50)
+      format=     'csv' | 'json' | 'auto' (non-docs targets)
 
     Returns:
-      list[dict] if CSV/JSON, or a mock dataset if no real source.
+      ING.docs  → list[{id, text, source, chunk_index, char_count}]
+      others    → list[dict] (CSV/JSON) or mock data
     """
+    if target and target[0] == "docs":
+        return _ing_docs(params)
+
     source = ".".join(target)
     path: str | None = params.get("path")
     fmt: str = params.get("format", "auto")
@@ -188,6 +203,94 @@ def merge_handler(target: list[str], params: dict, ctx) -> Any:
     if isinstance(data, list):
         return data
     return [data] if data is not None else []
+
+
+# ── ING.docs helpers ─────────────────────────────────────────────────────────
+
+def _ing_docs(params: dict) -> list[dict]:
+    src = params.get("src", "").strip()
+    if not src:
+        raise ValueError("ING.docs requires src= parameter")
+
+    chunk_size = max(50, int(params.get("chunk_size", 400)))
+    overlap = max(0, int(params.get("overlap", 50)))
+    if overlap >= chunk_size:
+        overlap = chunk_size // 4
+
+    if src.startswith(("http://", "https://")):
+        if not src.startswith(("http://", "https://")):
+            raise ValueError(f"ING.docs: unsupported URL scheme: {src}")
+        text = _fetch_url(src)
+        source = src
+    else:
+        p = Path(src)
+        if not p.exists():
+            raise FileNotFoundError(f"ING.docs: not found: {src}")
+        text = _read_doc(p)
+        source = str(p.resolve())
+
+    return _chunk_text(text, source, chunk_size, overlap)
+
+
+def _fetch_url(url: str) -> str:
+    if not _HTTPX:
+        raise ImportError("ING.docs URL fetching requires httpx (pip install praxis-lang[bridge])")
+    resp = _httpx.get(url, timeout=15, follow_redirects=True)
+    resp.raise_for_status()
+    return resp.text
+
+
+def _read_doc(path: Path) -> str:
+    ext = path.suffix.lower()
+    if ext == ".pdf":
+        try:
+            import pdfplumber
+        except ImportError:
+            raise ImportError("PDF ingestion requires pdfplumber: pip install praxis-lang[rag]")
+        with pdfplumber.open(str(path)) as pdf:
+            return "\n\n".join(
+                page.extract_text() or "" for page in pdf.pages
+            )
+    # .txt, .md, and anything else — treat as plain text
+    return path.read_text(encoding="utf-8")
+
+
+def _chunk_text(text: str, source: str, chunk_size: int, overlap: int) -> list[dict]:
+    # Split on paragraph breaks; rejoin small paragraphs up to chunk_size
+    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+    raw_chunks: list[str] = []
+    buf = ""
+
+    for para in paragraphs:
+        candidate = (buf + "\n\n" + para).strip() if buf else para
+        if len(candidate) <= chunk_size:
+            buf = candidate
+        else:
+            if buf:
+                raw_chunks.append(buf)
+            if len(para) > chunk_size:
+                # Sliding window over oversized paragraphs
+                for i in range(0, len(para), chunk_size - overlap):
+                    seg = para[i : i + chunk_size]
+                    if seg.strip():
+                        raw_chunks.append(seg.strip())
+                buf = para[-(overlap):].strip() if overlap else ""
+            else:
+                buf = para
+
+    if buf:
+        raw_chunks.append(buf)
+
+    return [
+        {
+            "id": hashlib.sha256(f"{source}|{i}".encode()).hexdigest(),
+            "text": chunk,
+            "source": source,
+            "chunk_index": i,
+            "char_count": len(chunk),
+        }
+        for i, chunk in enumerate(raw_chunks)
+    ]
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────

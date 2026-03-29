@@ -70,6 +70,23 @@ agent = [
 mcp = [
     "mcp>=1.0.0",
 ]
+# RAG — document ingestion + embeddings (sentence-transformers for local provider)
+rag = [
+    "pdfplumber>=0.11",
+    "sentence-transformers>=3.0.0",
+]
+# RAG with Voyage AI embeddings
+rag-voyage = [
+    "pdfplumber>=0.11",
+    "sentence-transformers>=3.0.0",
+    "voyageai>=0.2",
+]
+# RAG with OpenAI embeddings
+rag-openai = [
+    "pdfplumber>=0.11",
+    "sentence-transformers>=3.0.0",
+    "openai>=1.0",
+]
 # Everything
 all = [
     "anthropic>=0.40.0",
@@ -78,6 +95,7 @@ all = [
     "uvicorn>=0.30.0",
     "httpx>=0.27.0",
     "mcp>=1.0.0",
+    "pdfplumber>=0.11",
 ]
 # Development
 dev = [

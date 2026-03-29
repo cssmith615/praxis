@@ -1,0 +1,9 @@
+// Index a directory of markdown docs into a named corpus.
+// Run once (or on schedule) to build the retrieval layer.
+// Usage: praxis run index.px
+
+GOAL:index_docs
+
+ING.docs(src=./docs/, chunk_size=400, overlap=50) ->
+EMBED.text(corpus=project_docs, provider=local) ->
+OUT.console(msg="Indexed $last_output.chunks_stored chunks into project_docs corpus")

@@ -66,6 +66,7 @@ Praxis is **language-agnostic at the execution boundary**. A FastAPI bridge (inc
 | Parse, validate, run programs | Python 3.11+ |
 | AI goal planning | `ANTHROPIC_API_KEY` (Claude) |
 | Semantic program memory | `pip install praxis-lang[memory]` (~700 MB, downloads PyTorch via sentence-transformers) |
+| RAG — document retrieval | `pip install praxis-lang[rag]` (includes sentence-transformers + pdfplumber) |
 | REST bridge | `pip install praxis-lang[bridge]` |
 | Everything | `pip install praxis-lang[all]` |
 
@@ -84,6 +85,15 @@ pip install praxis-lang[ai]
 
 # With semantic memory (requires PyTorch)
 pip install praxis-lang[memory]
+
+# With RAG — document ingestion, embeddings, retrieval
+pip install praxis-lang[rag]
+
+# With Voyage AI embeddings
+pip install praxis-lang[rag-voyage]
+
+# With OpenAI embeddings
+pip install praxis-lang[rag-openai]
 
 # With REST bridge
 pip install praxis-lang[bridge]
@@ -313,6 +323,76 @@ SORT.field(field=score, order=desc)          # sort list by field descending
 | **Control** | `IF` `LOOP` `PAR` `GOAL` `PLAN` `SKIP` `BREAK` `WAIT` |
 | **Error** | `RETRY` `FALLBACK` `ALERT` |
 | **Audit** | `LOG` `AUDIT` `TRACE` |
+
+---
+
+## RAG — Document Retrieval
+
+`pip install praxis-lang[rag]`
+
+Three verbs give you a complete retrieval-augmented generation pipeline. Index once, query anywhere.
+
+### ING.docs — Ingest documents into chunks
+
+```
+ING.docs(src=./docs/, chunk_size=400, overlap=50)
+```
+
+Accepts `.txt`, `.md`, `.pdf` files and `https://` URLs. Returns a list of `{id, text, source, chunk_index, char_count}` chunks. Chunk IDs are deterministic — re-indexing the same file updates existing entries rather than creating duplicates.
+
+### EMBED.text — Embed and store chunks
+
+```
+ING.docs(src=./docs/) -> EMBED.text(corpus=project_docs, provider=local)
+```
+
+Embeds each chunk and stores it in `~/.praxis/embeddings.db`. Providers: `local` (sentence-transformers, default), `voyage` (`VOYAGE_API_KEY`), `openai` (`OPENAI_API_KEY`).
+
+### RECALL.docs — One-step RAG
+
+```
+RECALL.docs(query=$question, k=5, corpus=project_docs) -> SET.context
+```
+
+Embeds the query, retrieves the top-k matching chunks, and returns a formatted context block ready to inject into a `GEN` prompt. Returns an empty string if the corpus has no matching results.
+
+### Full pipeline
+
+```
+// index.px — run once to build the corpus
+GOAL:index_docs
+
+ING.docs(src=./docs/, chunk_size=400, overlap=50) ->
+EMBED.text(corpus=project_docs, provider=local) ->
+OUT.console(msg="Indexed corpus")
+```
+
+```
+// query.px — ask a question against the corpus
+GOAL:rag_query
+
+SET.question(value="How does authentication work?") ->
+RECALL.docs(query=$question, k=5, corpus=project_docs) ->
+SET.context ->
+GEN.answer(prompt="Answer using ONLY the context below.\n\nQuestion: $question\n\nContext:\n$context\n\nAnswer:") ->
+OUT.console
+```
+
+For multi-hop agentic retrieval, use `SEARCH.semantic` to retrieve, evaluate sufficiency with `EVAL`, and loop:
+
+```
+GOAL:agentic_query
+
+SET.question(value="How is rate limiting implemented?") ->
+SEARCH.semantic(query=$question, k=5, corpus=project_docs) ->
+SET.results ->
+EVAL.sufficient(threshold=0.8) ->
+IF.$sufficient == false ->
+  SEARCH.semantic(query="middleware request handling", k=3, corpus=project_docs) ->
+  MERGE ->
+GEN.answer(prompt="Answer: $question\n\nContext: $last_output") ->
+OUT.console
+```
 
 ---
 

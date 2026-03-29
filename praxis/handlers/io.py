@@ -7,7 +7,7 @@ FETCH   httpx GET, returns parsed JSON or raw text
 POST    httpx POST with JSON body
 OUT     dispatches to named channel (console default; telegram built-in; extensible via register_out_channel)
 STORE   SQLite key/value write  (~/.praxis/kv.db)
-RECALL  SQLite key/value read
+RECALL  SQLite key/value read   (RECALL.docs → one-step RAG context block, Sprint A)
 SEARCH  vector search over program memory (delegates to ctx.memory)
 """
 from __future__ import annotations
@@ -20,6 +20,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
+
+from praxis.embeddings import EmbeddingsDB
 
 # httpx is a core dependency for FETCH/POST
 try:
@@ -341,7 +343,28 @@ def store_handler(target: list[str], params: dict, ctx) -> Any:
 
 
 def recall_handler(target: list[str], params: dict, ctx) -> Any:
-    """RECALL — Retrieve from SQLite key/value store."""
+    """RECALL — Retrieve data.
+
+    RECALL.docs(query=..., corpus=name, k=5, provider=local)
+      One-step RAG: embed query → search embeddings corpus → return formatted context block.
+      Returns: str — "[Source: path]\nchunk text\n\n[Source: ...]..."
+      Empty string if corpus has no results.
+
+    Other targets: key/value read from ~/.praxis/kv.db.
+    """
+    if target and target[0] == "docs":
+        query = params.get("query") or (str(ctx.last_output) if ctx.last_output else "")
+        if not query:
+            raise ValueError("RECALL.docs requires query= parameter")
+        corpus = params.get("corpus", "default")
+        k = max(1, int(params.get("k", 5)))
+        provider = params.get("provider", "local")
+        db = EmbeddingsDB(provider=provider)
+        results = db.search(query, corpus, k=k)
+        if not results:
+            return ""
+        return "\n\n".join(f"[Source: {r['source']}]\n{r['text']}" for r in results)
+
     key = params.get("name", params.get("key", ".".join(target)))
     conn = _get_kv_conn()
     row = conn.execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()
