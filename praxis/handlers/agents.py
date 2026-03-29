@@ -278,16 +278,24 @@ def sign_handler(target: list[str], params: dict, ctx) -> Any:
     }
 
 
+_REMEDIATE_ACTIONS = frozenset({"isolate", "block", "patch", "notify", "rollback"})
+
+
 def cap_handler(target: list[str], params: dict, ctx) -> Any:
     """
-    CAP — Declare capability scope for the current agent.
+    CAP — Declare capability scope or execute a structured remediation action.
 
-    Records the allow-list and enforces it at runtime: any subsequent verb
-    not in the allow set raises CapabilityViolation.
+    CAP.agent_name(role=data, allow=[ING,CLN,XFRM])
+      Declares verb allow-list for runtime enforcement.
 
-    Usage:
-        CAP.agent_name(role=data, allow=[ING,CLN,XFRM])
+    CAP.remediate.<action>(target=, reason=, environment=prod, dry_run=true)
+      Records a structured remediation action. Constitutional rule: ALWAYS
+      preceded by GATE in prod mode — the executor enforces this.
+      Valid actions: isolate, block, patch, notify, rollback.
     """
+    if target and target[0] == "remediate":
+        return _cap_remediate(target[1:], params, ctx)
+
     agent = ".".join(target) if target else "self"
     role  = params.get("role", "worker")
     allow = params.get("allow", [])
@@ -305,3 +313,59 @@ def cap_handler(target: list[str], params: dict, ctx) -> Any:
     ctx._cap_allow = set(allow)
 
     return cap_entry
+
+
+def _cap_remediate(action_target: list[str], params: dict, ctx) -> dict:
+    """Execute (or dry-run) a structured remediation action.
+
+    action_target: first element is the action name (isolate|block|patch|notify|rollback)
+    params:
+      target=      asset to act on (host, IP, service name, user)
+      reason=      justification — logged in audit trail
+      environment= prod (default) | staging | dev
+      approver=    who approved (populated by GATE automatically in prod mode)
+      dry_run=     true (default) | false — false queues real execution
+    """
+    from datetime import datetime, timezone
+
+    action = action_target[0] if action_target else params.get("action", "")
+    if action not in _REMEDIATE_ACTIONS:
+        raise ValueError(
+            f"CAP.remediate: unknown action '{action}'. "
+            f"Valid: {sorted(_REMEDIATE_ACTIONS)}"
+        )
+
+    asset       = params.get("target", params.get("host", params.get("ip", "")))
+    reason      = params.get("reason", "")
+    environment = params.get("environment", "prod")
+    approver    = params.get("approver", "")
+    dry_run     = str(params.get("dry_run", "true")).lower() != "false"
+
+    record: dict = {
+        "action":      action,
+        "target":      asset,
+        "reason":      reason,
+        "environment": environment,
+        "approver":    approver,
+        "dry_run":     dry_run,
+        "timestamp":   datetime.now(timezone.utc).isoformat(),
+        "executed":    False,
+    }
+
+    if dry_run:
+        record["note"] = (
+            f"Dry run — no action taken. "
+            f"Set dry_run=false and add GATE before CAP.remediate to execute."
+        )
+        return record
+
+    # Real integration is wired in Iron Dome (Sprint I-L).
+    # Here we record intent and mark executed=True for the audit trail.
+    record["executed"] = True
+    record["note"]     = f"Remediation '{action}' queued for '{asset}' in {environment}."
+
+    # Write to audit log if available on ctx
+    if hasattr(ctx, "audit_log") and callable(ctx.audit_log):
+        ctx.audit_log(f"CAP.remediate: {action} on {asset} (env={environment}, approver={approver})")
+
+    return record

@@ -5,19 +5,21 @@ READ    file read, returns content string
 WRITE   file write, respects GATE in production mode
 FETCH   httpx GET, returns parsed JSON or raw text
 POST    httpx POST with JSON body
-OUT     dispatches to named channel (console default; telegram built-in; extensible via register_out_channel)
+OUT     dispatches to named channel (console default; telegram/slack/discord/pagerduty/jira built-in)
 STORE   SQLite key/value write  (~/.praxis/kv.db)
 RECALL  SQLite key/value read   (RECALL.docs → one-step RAG context block, Sprint A)
 SEARCH  vector search over program memory (delegates to ctx.memory)
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import sqlite3
 import time
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -287,6 +289,126 @@ def _send_x(msg: str, params: dict) -> dict:
     return {"posted": True, "tweet_id": tweet_id, "chars": len(text)}
 
 
+def _send_pagerduty(msg: str, params: dict) -> dict:
+    """OUT.pagerduty — Create a PagerDuty incident via Events API v2.
+
+    Required env var: PAGERDUTY_ROUTING_KEY
+    Optional params:  summary=, severity=critical|error|warning|info,
+                      source=, dedup_key=, component=, group=, class=
+    """
+    import httpx
+
+    routing_key = os.environ.get("PAGERDUTY_ROUTING_KEY")
+    if not routing_key:
+        raise ValueError(
+            "PAGERDUTY_ROUTING_KEY environment variable not set. "
+            "Get your integration key from PagerDuty → Integrations → Events API v2."
+        )
+
+    summary  = params.get("summary", msg)[:1024]
+    severity = params.get("severity", "error")
+    if severity not in ("critical", "error", "warning", "info"):
+        severity = "error"
+
+    payload: dict = {
+        "routing_key":   routing_key,
+        "event_action":  "trigger",
+        "payload": {
+            "summary":   summary,
+            "source":    params.get("source", "praxis"),
+            "severity":  severity,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+    }
+    if params.get("dedup_key"):
+        payload["dedup_key"] = params["dedup_key"]
+    if params.get("component"):
+        payload["payload"]["component"] = params["component"]
+    if params.get("group"):
+        payload["payload"]["group"] = params["group"]
+    if params.get("class"):
+        payload["payload"]["class"] = params["class"]
+
+    resp = httpx.post(
+        "https://events.pagerduty.com/v2/enqueue",
+        json=payload,
+        timeout=15,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    return {
+        "status":    data.get("status", "ok"),
+        "dedup_key": data.get("dedup_key", ""),
+        "message":   data.get("message", ""),
+    }
+
+
+def _send_jira(msg: str, params: dict) -> dict:
+    """OUT.jira — Create a Jira issue via REST API v3.
+
+    Required env vars: JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN
+    Optional params:   project=SEC, summary=, description=,
+                       issue_type=Bug|Task|Story, priority=Critical|High|Medium|Low,
+                       labels= (comma-separated)
+    """
+    import httpx
+
+    base_url = os.environ.get("JIRA_BASE_URL", "").rstrip("/")
+    email    = os.environ.get("JIRA_EMAIL", "")
+    token    = os.environ.get("JIRA_API_TOKEN", "")
+
+    if not all([base_url, email, token]):
+        raise ValueError(
+            "JIRA_BASE_URL, JIRA_EMAIL, and JIRA_API_TOKEN environment variables must be set."
+        )
+
+    project    = params.get("project", "SEC")
+    summary    = params.get("summary", msg)[:255]
+    description = params.get("description", msg)
+    issue_type = params.get("issue_type", "Bug")
+    priority   = params.get("priority", "High")
+    labels_raw = params.get("labels", [])
+    labels     = (
+        [l.strip() for l in labels_raw.split(",")]
+        if isinstance(labels_raw, str)
+        else list(labels_raw)
+    )
+
+    body = {
+        "fields": {
+            "project":     {"key": project},
+            "summary":     summary,
+            "description": {
+                "type":    "doc",
+                "version": 1,
+                "content": [{"type": "paragraph", "content": [{"type": "text", "text": description}]}],
+            },
+            "issuetype": {"name": issue_type},
+            "priority":  {"name": priority},
+            "labels":    labels,
+        }
+    }
+
+    credentials = base64.b64encode(f"{email}:{token}".encode()).decode()
+    resp = httpx.post(
+        f"{base_url}/rest/api/3/issue",
+        json=body,
+        headers={
+            "Authorization": f"Basic {credentials}",
+            "Content-Type":  "application/json",
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    key  = data.get("key", "")
+    return {
+        "id":  data.get("id"),
+        "key": key,
+        "url": f"{base_url}/browse/{key}",
+    }
+
+
 def out_handler(target: list[str], params: dict, ctx) -> Any:
     """OUT — Send to a named channel.
 
@@ -319,6 +441,14 @@ def out_handler(target: list[str], params: dict, ctx) -> Any:
     if channel in ("x", "twitter"):
         result = _send_x(msg, params)
         return {"channel": "x", "msg": msg, **result}
+
+    if channel == "pagerduty":
+        result = _send_pagerduty(msg, params)
+        return {"channel": "pagerduty", "msg": msg, **result}
+
+    if channel == "jira":
+        result = _send_jira(msg, params)
+        return {"channel": "jira", "msg": msg, **result}
 
     if channel in _OUT_CHANNELS:
         result = _OUT_CHANNELS[channel](msg, params)

@@ -50,3 +50,13 @@ Human confirmation required before any rule is committed.
 [verb:AUDIT] Every security IR program must begin with AUDIT.start and end with AUDIT.close — IR actions without audit trails are unacceptable.
 
 [verb:STORE] All IR programs must STORE state with persist=true — incident state must survive process restarts.
+
+## Sprint F — Remediation and Escalation Rules
+
+[verb:CAP] ALWAYS require GATE before any CAP.remediate action in prod mode — no automated remediation without human approval.
+
+[verb:GEN] NEVER chain GEN directly to CAP.remediate without GATE between them — LLM output must not trigger automated remediation unreviewed.
+
+[verb:OUT] OUT.pagerduty only fires when EVAL.risk score >= 7. Scores below 7 route to OUT.jira only.
+
+[verb:RETRY] All ING.threat_intel fetches must have RETRY(attempts=2) and a FALLBACK — open failures must not halt an IR pipeline.
