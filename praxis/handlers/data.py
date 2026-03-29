@@ -217,19 +217,37 @@ def _ing_docs(params: dict) -> list[dict]:
     if overlap >= chunk_size:
         overlap = chunk_size // 4
 
+    p = Path(src)
+    if p.is_dir():
+        return _ing_docs_dir(p, chunk_size, overlap)
+
     if src.startswith(("http://", "https://")):
-        if not src.startswith(("http://", "https://")):
-            raise ValueError(f"ING.docs: unsupported URL scheme: {src}")
         text = _fetch_url(src)
         source = src
     else:
-        p = Path(src)
         if not p.exists():
             raise FileNotFoundError(f"ING.docs: not found: {src}")
         text = _read_doc(p)
         source = str(p.resolve())
 
     return _chunk_text(text, source, chunk_size, overlap)
+
+
+_DOC_EXTENSIONS = {".txt", ".md", ".pdf", ".json"}
+
+
+def _ing_docs_dir(directory: Path, chunk_size: int, overlap: int) -> list[dict]:
+    """Ingest all supported files in a directory (recursive)."""
+    chunks: list[dict] = []
+    for file in sorted(directory.rglob("*")):
+        if file.is_file() and file.suffix.lower() in _DOC_EXTENSIONS:
+            try:
+                text = _read_doc(file)
+                if text.strip():
+                    chunks.extend(_chunk_text(text, str(file.resolve()), chunk_size, overlap))
+            except Exception:
+                pass  # Skip unreadable files; don't abort the whole directory
+    return chunks
 
 
 def _fetch_url(url: str) -> str:
@@ -248,11 +266,41 @@ def _read_doc(path: Path) -> str:
         except ImportError:
             raise ImportError("PDF ingestion requires pdfplumber: pip install praxis-lang[rag]")
         with pdfplumber.open(str(path)) as pdf:
-            return "\n\n".join(
-                page.extract_text() or "" for page in pdf.pages
-            )
-    # .txt, .md, and anything else — treat as plain text
+            return "\n\n".join(page.extract_text() or "" for page in pdf.pages)
+    if ext == ".json":
+        return _json_to_text(path)
     return path.read_text(encoding="utf-8")
+
+
+def _json_to_text(path: Path) -> str:
+    """Convert JSON to readable text for embedding.
+
+    Chuck decision files (contain 'decision' + 'rejected' keys) are formatted
+    as structured prose so semantic search works naturally.
+    All other JSON falls back to an indented dump.
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return path.read_text(encoding="utf-8", errors="replace")
+
+    if isinstance(data, dict) and "decision" in data and "rejected" in data:
+        parts = [f"Decision: {data.get('decision', '')}"]
+        if data.get("rejected"):
+            parts.append(f"Rejected: {', '.join(data['rejected'])}")
+        if data.get("reason"):
+            parts.append(f"Reason: {data['reason']}")
+        if data.get("constraints"):
+            parts.append(f"Constraints: {', '.join(data['constraints'])}")
+        if data.get("tags"):
+            parts.append(f"Tags: {', '.join(data['tags'])}")
+        if data.get("id"):
+            parts.append(f"ID: {data['id']}")
+        if data.get("date"):
+            parts.append(f"Date: {data['date']}")
+        return "\n".join(parts)
+
+    return json.dumps(data, indent=2)
 
 
 def _chunk_text(text: str, source: str, chunk_size: int, overlap: int) -> list[dict]:

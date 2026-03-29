@@ -132,6 +132,38 @@ def test_ing_docs_missing_src_raises():
         HANDLERS["ING"](["docs"], {}, ctx)
 
 
+def test_ing_docs_indexes_directory(tmp_path):
+    (tmp_path / "a.md").write_text("File A paragraph one.\n\nFile A paragraph two.")
+    (tmp_path / "b.md").write_text("File B paragraph one.\n\nFile B paragraph two.")
+    ctx = ExecutionContext()
+    chunks = HANDLERS["ING"](["docs"], {"src": str(tmp_path)}, ctx)
+    assert len(chunks) >= 2
+    sources = {c["source"] for c in chunks}
+    assert len(sources) == 2  # both files contributed chunks
+
+
+def test_ing_docs_json_chuck_decision(tmp_path):
+    import json
+    decision = {
+        "id": "dec_use_jwt_auth",
+        "decision": "Use short-lived JWT tokens for authentication",
+        "rejected": ["session cookies", "API keys"],
+        "reason": "Stateless scaling — no Redis dependency",
+        "constraints": ["no Redis", "stateless API"],
+        "tags": ["auth", "security"],
+        "date": "2026-03-29",
+        "status": "active",
+    }
+    f = tmp_path / "dec_use_jwt_auth.json"
+    f.write_text(json.dumps(decision))
+    ctx = ExecutionContext()
+    chunks = HANDLERS["ING"](["docs"], {"src": str(f)}, ctx)
+    assert len(chunks) >= 1
+    text = chunks[0]["text"]
+    assert "JWT" in text
+    assert "session cookies" in text  # rejected alternatives are searchable
+
+
 # ── EMBED.text → SEARCH.semantic round-trip ───────────────────────────────────
 
 def test_embed_search_round_trip(tmp_path, sample_chunks):
