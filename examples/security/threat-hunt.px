@@ -1,0 +1,107 @@
+// threat-hunt.px — Proactive Threat Hunting: CVE → SIEM Query → Score → Route
+//
+// Pipeline:
+//   1. ING.threat_intel  fetch CVE details from NVD (RETRY)
+//   2. ING.threat_intel  map CVE to MITRE ATT&CK TTPs (RETRY)
+//   3. RECALL.docs       retrieve hunting playbooks for this CVE/TTP
+//   4. GEN               generate SIEM query from CVE + TTP context
+//   5. ING.siem          execute generated SIEM query
+//   6. EVAL.sufficient   loop: did the hunt surface enough signal?
+//   7. EVAL.risk         score any confirmed hits
+//   8. Route: >= 7 → PD + Jira; >= 4 → Jira; < 4 → LOG
+//   9. STORE + AUDIT
+//
+// Constitutional rules enforced:
+//   - AUDIT.start/close bookends
+//   - RECALL.docs before EVAL.risk
+//   - STORE persist=true
+//   - ING.threat_intel RETRY(attempts=2)
+//   - OUT.pagerduty only on score >= 7
+//
+// Requires: ANTHROPIC_API_KEY, PAGERDUTY_ROUTING_KEY, JIRA_BASE_URL/EMAIL/API_TOKEN
+// Usage:    praxis run threat-hunt.px  (pass cve_id=$CVE_ID)
+
+GOAL:threat_hunt
+
+AUDIT.start(label="threat_hunt") ->
+
+SET.cve_id(value=$cve_id) ->
+
+RETRY(attempts=2) ->
+  ING.threat_intel(src=nvd, cve_id=$cve_id) ->
+SET.cve_detail ->
+
+RETRY(attempts=2) ->
+  ING.threat_intel(src=mitre, cve=$cve_id) ->
+SET.mitre_ttps ->
+
+RECALL.docs(
+  query="threat hunting SIEM query indicators of compromise exploit detection",
+  k=5,
+  corpus=security_runbooks
+) ->
+SET.hunt_context ->
+
+GEN.siem_query(
+  prompt="Generate a Splunk SPL query to hunt for exploitation of $cve_id based on MITRE TTPs: $mitre_ttps. Context: $hunt_context. Return only the SPL query.",
+  provider=claude,
+  max_tokens=256
+) ->
+SET.siem_query ->
+
+ING.siem(alert=$siem_query, format=splunk) ->
+SET.hunt_results ->
+
+EVAL.sufficient(
+  query="Does the hunt surface enough signal to confirm or deny exploitation of $cve_id?",
+  context=$hunt_results,
+  provider=claude
+) ->
+SET.sufficient ->
+
+IF.$sufficient == "NO" ->
+  GEN.refined_query(
+    prompt="Refine this Splunk query for $cve_id to surface more signal: $siem_query. Add broader IOC patterns. Return only the SPL query.",
+    provider=claude,
+    max_tokens=256
+  ) ->
+  SET.siem_query ->
+  ING.siem(alert=$siem_query, format=splunk) ->
+  SET.hunt_results
+
+EVAL.risk(
+  context=$hunt_context,
+  environment="Production — active threat hunt for $cve_id",
+  provider=claude
+) ->
+SET.risk ->
+
+STORE.hunt(key="hunt_active", value=$risk, persist=true) ->
+
+IF.$risk >= 7 ->
+  PAR(
+    OUT.pagerduty(
+      summary="[THREAT-HUNT] Active exploitation indicators found for $cve_id",
+      severity=error,
+      dedup_key="hunt_active"
+    ),
+    OUT.jira(
+      project="SEC",
+      summary="[THREAT-HUNT] $cve_id exploitation indicators found",
+      priority="High",
+      labels="security, threat-hunt, active-exploitation"
+    )
+  )
+
+IF.$risk >= 4 AND $risk < 7 ->
+  OUT.jira(
+    project="SEC",
+    summary="[THREAT-HUNT] $cve_id — suspicious activity, low confidence",
+    priority="Medium",
+    labels="security, threat-hunt, investigate"
+  )
+
+IF.$risk < 4 ->
+  LOG.msg(msg="[HUNT-CLEAN] No confirmed exploitation of $cve_id. Hunt complete.")
+
+AUDIT.close(label="threat_hunt", outcome=ok)

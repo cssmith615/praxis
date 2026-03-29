@@ -1,0 +1,84 @@
+// ir-phishing.px — Phishing Incident Response
+//
+// Pipeline:
+//   1. ING.siem         normalize phishing / credential harvest alert
+//   2. ING.threat_intel enrich reported domain (RETRY)
+//   3. RECALL.docs      retrieve phishing runbooks + past campaigns
+//   4. EVAL.risk        score: credential harvest vs link-only vs spear-phishing
+//   5. Route by score:
+//      >= 7 → GATE + block domain + OUT.pagerduty + OUT.jira
+//      >= 4 → OUT.jira + LOG
+//      <  4 → LOG only
+//   6. STORE + AUDIT
+//
+// Constitutional rules enforced:
+//   - AUDIT.start/close bookends
+//   - RECALL.docs before EVAL.risk
+//   - STORE persist=true
+//   - GATE before CAP.remediate in prod
+//   - ING.threat_intel RETRY(attempts=2)
+//   - OUT.pagerduty only on score >= 7
+//
+// Requires: ANTHROPIC_API_KEY, PAGERDUTY_ROUTING_KEY, JIRA_BASE_URL/EMAIL/API_TOKEN
+// Usage:    praxis run ir-phishing.px
+
+GOAL:ir_phishing
+
+AUDIT.start(label="ir_phishing") ->
+
+ING.siem(alert=$raw_alert, format=auto) ->
+SET.alert ->
+
+RETRY(attempts=2) ->
+  ING.threat_intel(src=generic, url="https://urlhaus-api.abuse.ch/v1/url/") ->
+SET.domain_intel ->
+
+RECALL.docs(query="phishing credential harvest domain block email security", k=5, corpus=security_runbooks) ->
+SET.context ->
+
+EVAL.risk(
+  context=$context,
+  environment="Production — O365 tenant, 800 employees, executive spear-phishing in scope",
+  provider=claude
+) ->
+SET.risk ->
+
+STORE.incident(key="phishing_active", value=$risk, persist=true) ->
+
+IF.$risk >= 7 ->
+  GATE(
+    prompt="Block phishing domain? Risk score=$risk",
+    timeout=180
+  ) ->
+  CAP.remediate.block(
+    target=$alert,
+    reason="Active phishing domain — blocking DNS/proxy",
+    environment=prod,
+    approver="soc-oncall"
+  ) ->
+  PAR(
+    OUT.pagerduty(
+      summary="[PHISHING] Active campaign — domain blocked",
+      severity=error,
+      dedup_key="phishing_active"
+    ),
+    OUT.jira(
+      project="SEC",
+      summary="[P2-PHISHING] Active phishing campaign — domain blocked",
+      priority="High",
+      labels="security, phishing, incident, domain-blocked"
+    )
+  )
+
+IF.$risk >= 4 AND $risk < 7 ->
+  OUT.jira(
+    project="SEC",
+    summary="[P3-PHISHING] Suspected phishing — monitoring",
+    priority="Medium",
+    labels="security, phishing, monitoring"
+  )
+
+IF.$risk < 4 ->
+  LOG.msg(msg="[PHISHING-LOW] Below threshold — likely false positive. alert=$alert")
+
+AUDIT.close(label="ir_phishing", outcome=ok)

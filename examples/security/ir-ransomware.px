@@ -1,0 +1,86 @@
+// ir-ransomware.px — Ransomware Incident Response
+//
+// Pipeline:
+//   1. ING.siem         normalize the ransomware detection alert
+//   2. ING.threat_intel enrich with MITRE TTPs (RETRY)
+//   3. RECALL.docs      retrieve ransomware runbooks
+//   4. EVAL.risk        score severity in context
+//   5. GATE             human confirmation before containment
+//   6. CAP.remediate    isolate host + block C2
+//   7. OUT.pagerduty    alert SOC (critical)
+//   8. OUT.jira         P1 ticket
+//   9. STORE + AUDIT
+//
+// Constitutional rules enforced:
+//   - AUDIT.start/close bookends
+//   - RECALL.docs before EVAL.risk
+//   - STORE persist=true
+//   - GATE before every CAP.remediate in prod
+//   - ING.threat_intel wrapped in RETRY(attempts=2)
+//   - OUT.pagerduty only on score >= 7 (ransomware always qualifies)
+//
+// Requires: ANTHROPIC_API_KEY, PAGERDUTY_ROUTING_KEY, JIRA_BASE_URL/EMAIL/API_TOKEN
+// Usage:    praxis run ir-ransomware.px
+
+GOAL:ir_ransomware
+
+AUDIT.start(label="ir_ransomware") ->
+
+ING.siem(alert=$raw_alert, format=auto) ->
+SET.alert ->
+
+RETRY(attempts=2) ->
+  ING.threat_intel(src=mitre, cve=$alert) ->
+SET.ttp_context ->
+
+RECALL.docs(query="ransomware containment isolation lateral movement", k=5, corpus=security_runbooks) ->
+SET.runbook_context ->
+
+EVAL.risk(
+  context=$runbook_context,
+  environment="Production — all hosts in scope, data exfiltration risk, ransomware family unknown",
+  provider=claude
+) ->
+SET.risk ->
+
+STORE.incident(key="ransomware_active", value=$risk, persist=true) ->
+
+GATE(
+  prompt="Isolate affected host? Ransomware detected — risk score=$risk",
+  timeout=300
+) ->
+CAP.remediate.isolate(
+  target=$alert,
+  reason="Ransomware detection — isolating to prevent lateral movement",
+  environment=prod,
+  approver="soc-oncall"
+) ->
+SET.isolate_result ->
+
+GATE(
+  prompt="Block C2 destination? Risk score=$risk",
+  timeout=300
+) ->
+CAP.remediate.block(
+  target=$alert,
+  reason="Ransomware C2 communication — blocking egress",
+  environment=prod,
+  approver="soc-oncall"
+) ->
+SET.block_result ->
+
+PAR(
+  OUT.pagerduty(
+    summary="[RANSOMWARE] Host isolated — C2 blocked. Score: critical",
+    severity=critical,
+    dedup_key="ransomware_active"
+  ),
+  OUT.jira(
+    project="SEC",
+    summary="[P1-RANSOMWARE] Active ransomware — containment in progress",
+    priority="Critical",
+    labels="security, ransomware, incident, p1, containment-active"
+  )
+) ->
+
+AUDIT.close(label="ir_ransomware", outcome=contained)

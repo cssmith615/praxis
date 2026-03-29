@@ -1,0 +1,136 @@
+// ir-data-breach.px — Data Breach Incident Response
+//
+// Pipeline:
+//   1. ING.siem         normalize the exfiltration/DLP alert
+//   2. ING.threat_intel enrich with MITRE TTPs (RETRY)
+//   3. RECALL.docs      retrieve breach response runbooks + compliance obligations
+//   4. EVAL.risk        score: data classification, volume, regulatory scope
+//   5. Route:
+//      >= 9 → GATE + isolate + notify legal + PD critical + Jira SEC + Jira LEGAL
+//      >= 7 → GATE + block exfil path + PD error + Jira SEC + Jira LEGAL
+//      >= 4 → Jira SEC
+//      <  4 → LOG only
+//   6. STORE persist=true + AUDIT
+//
+// Constitutional rules enforced:
+//   - AUDIT.start/close bookends
+//   - RECALL.docs before EVAL.risk
+//   - STORE persist=true
+//   - GATE before every CAP.remediate in prod
+//   - ING.threat_intel RETRY(attempts=2)
+//   - OUT.pagerduty only on score >= 7
+//
+// Requires: ANTHROPIC_API_KEY, PAGERDUTY_ROUTING_KEY, JIRA_BASE_URL/EMAIL/API_TOKEN
+// Usage:    praxis run ir-data-breach.px
+
+GOAL:ir_data_breach
+
+AUDIT.start(label="ir_data_breach") ->
+
+ING.siem(alert=$raw_alert, format=auto) ->
+SET.alert ->
+
+RETRY(attempts=2) ->
+  ING.threat_intel(src=mitre, cve=$alert) ->
+SET.ttp_context ->
+
+RECALL.docs(
+  query="data breach exfiltration GDPR HIPAA PCI-DSS notification legal obligation",
+  k=7,
+  corpus=security_runbooks
+) ->
+SET.context ->
+
+EVAL.risk(
+  context=$context,
+  environment="Production — PII/PCI-DSS/HIPAA data in scope, 72-hour regulatory notification window",
+  provider=claude
+) ->
+SET.risk ->
+
+STORE.incident(key="data_breach_active", value=$risk, persist=true) ->
+
+IF.$risk >= 9 ->
+  GATE(
+    prompt="CRITICAL DATA BREACH: Isolate exfiltration source? 72hr regulatory clock starts now. Risk=$risk",
+    timeout=120
+  ) ->
+  CAP.remediate.isolate(
+    target=$alert,
+    reason="Active data breach — isolating exfiltration source",
+    environment=prod,
+    approver="ciso"
+  ) ->
+  GATE(
+    prompt="Send breach notification to legal and executive team? Risk=$risk",
+    timeout=120
+  ) ->
+  CAP.remediate.notify(
+    target="legal@company.com",
+    reason="Critical data breach detected — 72-hour regulatory notification may be required",
+    environment=prod,
+    approver="ciso"
+  ) ->
+  PAR(
+    OUT.pagerduty(
+      summary="[DATA-BREACH-CRITICAL] Active exfiltration — host isolated. Score: critical",
+      severity=critical,
+      dedup_key="data_breach_critical"
+    ),
+    OUT.jira(
+      project="SEC",
+      summary="[P1-BREACH] Active data exfiltration — immediate response required",
+      priority="Critical",
+      labels="security, data-breach, incident, p1, regulatory"
+    )
+  ) ->
+  OUT.jira(
+    project="LEGAL",
+    summary="[BREACH-NOTICE] Potential regulatory notification required — 72hr clock",
+    priority="Critical",
+    labels="legal, data-breach, gdpr, hipaa, pci-dss, 72hr-clock"
+  )
+
+IF.$risk >= 7 AND $risk < 9 ->
+  GATE(
+    prompt="Block exfiltration path? Risk=$risk",
+    timeout=180
+  ) ->
+  CAP.remediate.block(
+    target=$alert,
+    reason="Data exfiltration path — blocking egress to external destination",
+    environment=prod,
+    approver="soc-oncall"
+  ) ->
+  PAR(
+    OUT.pagerduty(
+      summary="[DATA-BREACH-HIGH] Exfiltration blocked. Score: high",
+      severity=error,
+      dedup_key="data_breach_high"
+    ),
+    OUT.jira(
+      project="SEC",
+      summary="[P2-BREACH] Data exfiltration detected — egress blocked",
+      priority="High",
+      labels="security, data-breach, incident, high, egress-blocked"
+    )
+  ) ->
+  OUT.jira(
+    project="LEGAL",
+    summary="[BREACH-REVIEW] Potential data exposure — legal review required",
+    priority="High",
+    labels="legal, data-breach, review-required"
+  )
+
+IF.$risk >= 4 AND $risk < 7 ->
+  OUT.jira(
+    project="SEC",
+    summary="[P3-BREACH] Possible data exposure — investigate",
+    priority="Medium",
+    labels="security, data-breach, investigate"
+  )
+
+IF.$risk < 4 ->
+  LOG.msg(msg="[BREACH-LOW] Score below threshold — likely false positive. alert=$alert")
+
+AUDIT.close(label="ir_data_breach", outcome=ok)

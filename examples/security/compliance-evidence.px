@@ -1,0 +1,111 @@
+// compliance-evidence.px — SOC2 / HIPAA / PCI-DSS Evidence Collection
+//
+// Horizontal compliance program — works on top of existing security operations.
+// Collects evidence from multiple sources, scores gaps, creates Jira COMPLIANCE
+// tickets, and generates a summary report.
+//
+// Pipeline:
+//   1. ING.docs          ingest audit scope document
+//   2. RECALL.docs       retrieve control framework docs (SOC2/HIPAA/PCI)
+//   3. PAR evidence collection:
+//        a. ING.siem     pull audit log summary for review period
+//        b. ING.threat_intel  check CVE status for in-scope systems (RETRY)
+//   4. EVAL.risk         score compliance gaps (grounded in framework context)
+//   5. GEN               generate evidence narrative and gap analysis
+//   6. Route gaps:
+//      >= 7 → OUT.jira COMPLIANCE (Critical/High) + OUT.pagerduty
+//      >= 4 → OUT.jira COMPLIANCE (Medium)
+//      <  4 → OUT.jira COMPLIANCE (Low)
+//   7. STORE + AUDIT
+//
+// Constitutional rules enforced:
+//   - AUDIT.start/close bookends
+//   - RECALL.docs before EVAL.risk
+//   - STORE persist=true
+//   - ING.threat_intel RETRY(attempts=2)
+//   - OUT.pagerduty only on score >= 7
+//
+// Requires: ANTHROPIC_API_KEY, PAGERDUTY_ROUTING_KEY, JIRA_BASE_URL/EMAIL/API_TOKEN
+// Usage:    praxis run compliance-evidence.px
+//           (pass audit_scope=$SCOPE_FILE, framework=soc2|hipaa|pci-dss, period=$PERIOD)
+
+GOAL:compliance_evidence
+
+AUDIT.start(label="compliance_evidence") ->
+
+ING.docs(source=$audit_scope, format=json) ->
+SET.scope ->
+
+RECALL.docs(
+  query="$framework compliance controls evidence requirements audit procedures",
+  k=8,
+  corpus=compliance_runbooks
+) ->
+SET.framework_context ->
+
+PAR(
+  ING.siem(alert="index=audit earliest=-30d | stats count by action, user, result", format=splunk),
+  ING.docs(source=$policy_dir, format=directory)
+) ->
+SET.evidence_bundle ->
+
+RETRY(attempts=2) ->
+  ING.threat_intel(src=nvd, cve_id=$cve_id) ->
+SET.cve_status ->
+
+EVAL.risk(
+  context=$framework_context,
+  environment="$framework compliance audit — period: $period",
+  provider=claude
+) ->
+SET.gap_score ->
+
+GEN.evidence_report(
+  prompt="Write a compliance evidence summary for a $framework audit. Period: $period. Gap score: $gap_score/10. Evidence: $evidence_bundle. CVE status: $cve_status. Format: Executive Summary, Controls Tested, Evidence Collected, Gaps Identified, Recommended Actions.",
+  provider=claude,
+  max_tokens=1024
+) ->
+SET.report ->
+
+STORE.compliance(key="compliance_audit_active", value=$gap_score, persist=true) ->
+
+IF.$gap_score >= 7 ->
+  PAR(
+    OUT.pagerduty(
+      summary="[$framework-AUDIT] Critical compliance gap — immediate remediation required",
+      severity=error,
+      dedup_key="compliance_audit_active"
+    ),
+    OUT.jira(
+      project="COMPLIANCE",
+      summary="[CRITICAL-GAP] $framework audit — critical gaps require remediation",
+      priority="Critical",
+      labels="compliance, critical-gap, audit"
+    )
+  ) ->
+  OUT.jira(
+    project="SEC",
+    summary="[$framework-GAPS] Security controls require remediation before audit",
+    priority="High",
+    labels="security, compliance, remediation-required"
+  )
+
+IF.$gap_score >= 4 AND $gap_score < 7 ->
+  OUT.jira(
+    project="COMPLIANCE",
+    summary="[MEDIUM-GAP] $framework audit — gaps to address before certification",
+    priority="Medium",
+    labels="compliance, medium-gap, audit"
+  )
+
+IF.$gap_score < 4 ->
+  OUT.jira(
+    project="COMPLIANCE",
+    summary="[INFO] $framework audit — minor observations, no blocking gaps",
+    priority="Low",
+    labels="compliance, informational, audit"
+  )
+
+OUT.print(msg="=== $framework Evidence Report ($period) ===\n$report") ->
+
+AUDIT.close(label="compliance_evidence", outcome=ok)
