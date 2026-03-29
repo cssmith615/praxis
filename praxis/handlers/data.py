@@ -35,12 +35,28 @@ def ing_handler(target: list[str], params: dict, ctx) -> Any:
       overlap=    overlap chars between chunks (default 50)
       format=     'csv' | 'json' | 'auto' (non-docs targets)
 
+    params (ING.siem):
+      alert=      raw alert dict, JSON string, or CEF/LEEF text (or pipe from ctx)
+      format=     'auto' | 'splunk' | 'elastic' | 'qradar' | 'cef' | 'leef' | 'generic'
+
+    params (ING.threat_intel):
+      src=        'nvd' | 'mitre' | 'generic'
+      cve_id=     CVE ID for src=nvd  (e.g. CVE-2024-1234)
+      technique=  ATT&CK ID for src=mitre  (e.g. T1190)
+      url=        feed URL for src=generic
+
     Returns:
-      ING.docs  → list[{id, text, source, chunk_index, char_count}]
-      others    → list[dict] (CSV/JSON) or mock data
+      ING.docs         → list[{id, text, source, chunk_index, char_count}]
+      ING.siem         → SecurityAlert dict
+      ING.threat_intel → list[ThreatIntel dict]
+      others           → list[dict] (CSV/JSON) or mock data
     """
     if target and target[0] == "docs":
         return _ing_docs(params)
+    if target and target[0] == "siem":
+        return _ing_siem(params, ctx)
+    if target and target[0] == "threat_intel":
+        return _ing_threat_intel(params)
 
     source = ".".join(target)
     path: str | None = params.get("path")
@@ -339,6 +355,25 @@ def _chunk_text(text: str, source: str, chunk_size: int, overlap: int) -> list[d
         }
         for i, chunk in enumerate(raw_chunks)
     ]
+
+
+# ── ING.siem / ING.threat_intel helpers ──────────────────────────────────────
+
+def _ing_siem(params: dict, ctx) -> dict:
+    from praxis.security import normalize_siem_alert
+    raw = params.get("alert") or ctx.last_output
+    if raw is None:
+        raise ValueError("ING.siem requires alert= parameter or piped input from a prior step")
+    return normalize_siem_alert(raw, fmt=params.get("format", "auto"))
+
+
+def _ing_threat_intel(params: dict) -> list[dict]:
+    from praxis.security import fetch_threat_intel
+    src = params.get("src", "")
+    if not src:
+        raise ValueError("ING.threat_intel requires src= parameter (nvd, mitre, or generic)")
+    extra = {k: v for k, v in params.items() if k != "src"}
+    return fetch_threat_intel(src, **extra)
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────

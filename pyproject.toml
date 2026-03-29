@@ -87,6 +87,11 @@ rag-openai = [
     "sentence-transformers>=3.0.0",
     "openai>=1.0",
 ]
+# Security intelligence — SIEM normalization, NVD/MITRE threat intel, LLM risk scoring
+# httpx and anthropic are already core/ai deps; no additional packages required
+security = [
+    "anthropic>=0.40.0",
+]
 # Everything
 all = [
     "anthropic>=0.40.0",

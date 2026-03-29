@@ -38,3 +38,15 @@ Human confirmation required before any rule is committed.
 [verb:ING,VALIDATE] ALWAYS VALIDATE after ING.
 
 [verb:CLN,TRN] ALWAYS run CLN before TRN to ensure inputs are normalized. Raw data passed directly to TRN causes errors.
+
+---
+
+## Sprint E — Security Pack Rules
+
+[verb:EVAL] EVAL.risk MUST be preceded by at least one RECALL.docs — ungrounded risk scores without retrieved context are rejected.
+
+[verb:ING] ING.threat_intel fetches must be wrapped in RETRY(attempts=2) — threat intel APIs are unreliable and rate-limited.
+
+[verb:AUDIT] Every security IR program must begin with AUDIT.start and end with AUDIT.close — IR actions without audit trails are unacceptable.
+
+[verb:STORE] All IR programs must STORE state with persist=true — incident state must survive process restarts.

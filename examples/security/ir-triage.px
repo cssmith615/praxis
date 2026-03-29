@@ -1,0 +1,43 @@
+// ir-triage.px — Security Incident Response: Ingest → Enrich → Score → Route
+//
+// Pipeline:
+//   1. ING.siem      normalize raw alert from any SIEM format
+//   2. RECALL.docs   retrieve relevant runbooks and prior incidents
+//   3. EVAL.risk     LLM-graded risk score (1-10) grounded in retrieved context
+//   4. Route by score: critical/high → escalation message, medium/low → log
+//
+// Requires: ANTHROPIC_API_KEY
+// Usage:    praxis run ir-triage.px
+
+GOAL:ir_triage
+
+AUDIT.start(label="ir_triage") ->
+
+// Ingest and normalize the raw alert (auto-detects Splunk/Elastic/QRadar/CEF/LEEF)
+ING.siem(alert=$raw_alert, format=auto) ->
+SET.alert ->
+
+// Retrieve context: relevant runbooks, past incidents, known vulnerabilities
+RECALL.docs(query=$alert.description, k=5, corpus=security_runbooks) ->
+SET.context ->
+
+// Score risk against our specific environment
+// Constitutional rule: EVAL.risk must always be preceded by RECALL.docs
+EVAL.risk(
+  context=$context,
+  environment="Production SaaS — financial data, PCI-DSS scope, AWS us-east-1",
+  provider=claude
+) ->
+SET.risk ->
+
+// Persist incident state — must survive restarts (constitutional rule)
+STORE.incident(key=$alert.id, value=$risk, persist=true) ->
+
+// Route by priority
+IF.$risk.score >= 7 ->
+  OUT.print(msg="[ESCALATE] Score: $risk.score/10 | Priority: $risk.priority | $risk.rationale")
+
+IF.$risk.score < 7 ->
+  LOG.msg(msg="[MONITOR] Score: $risk.score/10 | $risk.rationale") ->
+
+AUDIT.close(label="ir_triage", outcome=ok)

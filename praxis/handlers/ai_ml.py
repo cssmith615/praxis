@@ -120,6 +120,15 @@ def eval_handler(target: list[str], params: dict, ctx) -> Any:
 
     Other targets: returns mock metric dict.
     """
+    if target and target[0] == "risk":
+        from praxis.security import score_risk
+        alert       = ctx.last_output
+        context     = params.get("context", "")
+        environment = params.get("environment", "production environment")
+        provider    = params.get("provider", "claude")
+        model       = params.get("model") or None
+        return score_risk(alert, context, environment, provider, model)
+
     if target and target[0] == "sufficient":
         prompt = params.get("prompt")
         if not prompt:

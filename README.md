@@ -95,6 +95,9 @@ pip install praxis-lang[rag-voyage]
 # With OpenAI embeddings
 pip install praxis-lang[rag-openai]
 
+# With security intelligence (SIEM normalization, NVD/MITRE threat intel, risk scoring)
+pip install praxis-lang[security]
+
 # With REST bridge
 pip install praxis-lang[bridge]
 
@@ -435,6 +438,55 @@ OUT.print
 Always set `max_hops` before a retrieval loop — `NEVER use LOOP without until= or a hops guard` is enforced by the constitutional rules.
 
 ---
+
+## Security Intelligence
+
+`pip install praxis-lang[security]`
+
+### ING.siem — Normalize SIEM alerts
+
+```praxis
+ING.siem(alert=$raw_alert, format=auto) -> SET.alert
+```
+
+Normalizes raw alerts from any SIEM into a standard `SecurityAlert` dict: `{id, timestamp, source_ip, dest_ip, severity (1-10), description, format, tags, raw}`.
+
+Supported formats (auto-detected or specify with `format=`): `splunk`, `elastic` (ECS), `qradar`, `cef`, `leef`, `generic`. Accepts dicts, JSON strings, and raw CEF/LEEF text.
+
+### ING.threat_intel — Fetch CVE / ATT&CK / feeds
+
+```praxis
+// CVE lookup from NVD (no API key required)
+RETRY(attempts=2) ->
+  ING.threat_intel(src=nvd, cve_id="CVE-2024-1234") ->
+SET.intel
+
+// ATT&CK technique (uses local cache at ~/.praxis/cache/mitre-attack.json if present)
+ING.threat_intel(src=mitre, technique="T1190") -> SET.technique
+
+// Generic feed URL
+ING.threat_intel(src=generic, url="https://feeds.example.com/iocs.json") -> SET.iocs
+```
+
+Constitutional rule: `ING.threat_intel` must always be wrapped in `RETRY(attempts=2)` — threat intel APIs are unreliable.
+
+### EVAL.risk — LLM-graded risk score
+
+```praxis
+// Always preceded by RECALL.docs (constitutional rule — ungrounded scores are rejected)
+RECALL.docs(query=$alert.description, k=5, corpus=security_runbooks) -> SET.context ->
+EVAL.risk(
+  context=$context,
+  environment="Production SaaS — PCI-DSS scope, AWS us-east-1",
+  provider=claude
+) -> SET.risk
+```
+
+Returns `{score (1-10), rationale, priority (critical|high|medium|low), mitre_techniques, recommended_actions}`.
+
+Score thresholds: 9-10 = critical (page immediately), 7-8 = high (escalate), 4-6 = medium (ticket), 1-3 = low (monitor).
+
+See `examples/security/ir-triage.px` for a complete IR triage pipeline.
 
 ## Constitutional Rules
 
