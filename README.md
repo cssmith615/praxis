@@ -338,7 +338,7 @@ Three verbs give you a complete retrieval-augmented generation pipeline. Index o
 ING.docs(src=./docs/, chunk_size=400, overlap=50)
 ```
 
-Accepts `.txt`, `.md`, `.pdf` files and `https://` URLs. Returns a list of `{id, text, source, chunk_index, char_count}` chunks. Chunk IDs are deterministic — re-indexing the same file updates existing entries rather than creating duplicates.
+Accepts `.txt`, `.md`, `.pdf`, `.json` files, directories, and `https://` URLs. Returns a list of `{id, text, source, chunk_index, char_count}` chunks. Chunk IDs are deterministic — re-indexing the same file updates existing entries rather than creating duplicates. Chuck decision JSON files are auto-converted to searchable prose.
 
 ### EMBED.text — Embed and store chunks
 
@@ -378,21 +378,61 @@ GEN.answer(prompt="Answer using ONLY the context below.\n\nQuestion: $question\n
 OUT.console
 ```
 
-For multi-hop agentic retrieval, use `SEARCH.semantic` to retrieve, evaluate sufficiency with `EVAL`, and loop:
+### GEN — LLM text generation
 
 ```
-GOAL:agentic_query
+GEN.answer(prompt="Answer using ONLY the context below.\n\nQuestion: $question\n\nContext:\n$context\n\nAnswer:")
+```
 
-SET.question(value="How is rate limiting implemented?") ->
-SEARCH.semantic(query=$question, k=5, corpus=project_docs) ->
-SET.results ->
-EVAL.sufficient(threshold=0.8) ->
-IF.$sufficient == false ->
-  SEARCH.semantic(query="middleware request handling", k=3, corpus=project_docs) ->
+Sends the prompt to a configured LLM and returns the generated string. Providers: `claude` (default, `ANTHROPIC_API_KEY`), `openai` (`OPENAI_API_KEY`), `local` (Ollama at `localhost:11434`). Use `model=` and `max_tokens=` to override defaults.
+
+`pip install praxis-lang[ai]` for Claude (included in `[all]`).
+
+### EVAL.sufficient — Agentic sufficiency gate
+
+```
+EVAL.sufficient(prompt="Is this context sufficient?\nContext: $context\nReply YES or NO.") -> SET.sufficient
+```
+
+Asks the LLM whether the current context is sufficient to answer the question. Returns `"YES"` or `"NO"`. Use inside agentic loops to decide whether to retrieve more before generating.
+
+### Agentic multi-hop RAG
+
+```praxis
+// agentic_query.px
+GOAL:agentic_rag
+
+SET.question(value="How does authentication work and what tokens are used?") ->
+SET.max_hops(value=3) ->
+SET.hops(value=0) ->
+
+RECALL.docs(query=$question, k=5, corpus=project_docs) ->
+SET.context ->
+SET.hops(value=1) ->
+
+EVAL.sufficient(
+  prompt="Is this context sufficient to fully answer the question?\nQuestion: $question\nContext: $context\nReply only YES or NO."
+) ->
+SET.sufficient ->
+
+IF.$sufficient == "NO" AND $hops < $max_hops ->
+  GEN.followup_query(
+    prompt="What specific additional information should I search for?\nQuestion: $question\nContext: $context\nOutput only a short search query:"
+  ) ->
+  SET.followup ->
+  RECALL.docs(query=$followup, k=3, corpus=project_docs) ->
   MERGE ->
-GEN.answer(prompt="Answer: $question\n\nContext: $last_output") ->
-OUT.console
+  SET.context ->
+
+GEN.answer(
+  prompt="Answer the question using ONLY the provided context. Cite sources.\n\nQuestion: $question\n\nContext:\n$context\n\nAnswer:",
+  provider=claude,
+  max_tokens=1024
+) ->
+OUT.print
 ```
+
+Always set `max_hops` before a retrieval loop — `NEVER use LOOP without until= or a hops guard` is enforced by the constitutional rules.
 
 ---
 

@@ -1,0 +1,43 @@
+// agentic_query.px — Multi-hop RAG with sufficiency gate
+//
+// Loop:
+//   1. Retrieve k=5 chunks for the question
+//   2. Ask EVAL.sufficient — is this enough to answer?
+//   3. If NO and hops < max_hops: generate a follow-up search query and loop
+//   4. If YES or hops exhausted: generate the final answer
+//
+// Run:
+//   ANTHROPIC_API_KEY=... praxis run agentic_query.px
+
+GOAL:agentic_rag
+
+SET.question(value="How does authentication work and what tokens are used?") ->
+SET.max_hops(value=3) ->
+SET.hops(value=0) ->
+
+RECALL.docs(query=$question, k=5, corpus=project_docs) ->
+SET.context ->
+SET.hops(value=1) ->
+LOG.msg(msg="Hop 1 — retrieved initial context") ->
+
+EVAL.sufficient(
+  prompt="Is this context sufficient to fully answer the question?\nQuestion: $question\nContext: $context\nReply only YES or NO."
+) ->
+SET.sufficient ->
+
+IF.$sufficient == "NO" AND $hops < $max_hops ->
+  GEN.followup_query(
+    prompt="Given this partial context, what specific additional information should I search for?\nQuestion: $question\nContext: $context\nOutput only a short search query:"
+  ) ->
+  SET.followup ->
+  LOG.msg(msg="Hop 2 — expanding search") ->
+  RECALL.docs(query=$followup, k=3, corpus=project_docs) ->
+  MERGE ->
+  SET.context ->
+
+GEN.answer(
+  prompt="Answer the question using ONLY the provided context. Cite sources. If the context does not contain the answer, say so.\n\nQuestion: $question\n\nContext:\n$context\n\nAnswer:",
+  provider=claude,
+  max_tokens=1024
+) ->
+OUT.print
